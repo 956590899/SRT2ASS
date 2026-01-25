@@ -1,6 +1,6 @@
-技术预览 ！！！！
+技术预览 ！
 
-普通卡拉OK效果展示
+！！！普通卡拉OK效果展示
 
 ![56f745550923dd5479c317739709b3de9d82485a](https://github.com/user-attachments/assets/e34a81cd-404e-4e21-8501-430fb30e3953)
 

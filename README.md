@@ -1,3 +1,15 @@
+图形化界面预览
+
+
+
+
+<img width="1216" height="839" alt="QQ截图20260129070031" src="https://github.com/user-attachments/assets/8148274c-4b7e-4825-a599-1b79958a4760" />
+
+
+
+
+
+
 技术预览 ！
 
 ！！！普通卡拉OK效果展示

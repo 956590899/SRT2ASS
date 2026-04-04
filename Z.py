@@ -1,5 +1,16 @@
 import os
 import sys
+
+# 设置环境变量，确保Python使用UTF-8编码
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+os.environ['LANG'] = 'zh_CN.UTF-8'
+os.environ['LC_ALL'] = 'zh_CN.UTF-8'
+
+# 确保标准输出/错误使用UTF-8编码
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 import re
 import json
 import shutil
@@ -14,12 +25,17 @@ from pathlib import Path
 
 # === 输出设置 ===
 ASK_OUTPUT_DIR = 0                # 0=使用默认目录，1=每次询问输出目录
-OUTPUT_DIR_FILTER_MARKER = ' (ASS)'  # 目录模式下过滤包含此标记的文件
+OUTPUT_DIR_FILTER_MARKER = ' (ASS_1)'  # 目录模式下过滤包含此标记的文件
 OUTPUT_REPLACE_MARKERS = [' (SSA)', ' (SRT)']  # 输出时替换这些标记
 
 # === 字幕效果设置 ===
+# 真实卡拉OK效果设置：
+# 0: 默认效果
+# 1: 真实卡拉OK效果
+# 2: 提词器效果
+# -1: 全选，同时处理所有效果
 KARAOKE_EFFECT = 1                # 0=不启用，1=启用卡拉OK效果
-REAL_KARAOKE_EFFECT = 0           # 真实卡拉OK效果设置：0=默认效果，1=真实卡拉OK式样，2=提词器式样
+REAL_KARAOKE_EFFECT = -1           # 真实卡拉OK效果设置：0=默认效果，1=真实卡拉OK式样，2=提词器式样，-1=全选
 NO_KARAOKE_SUFFIX = ' (SSA)'      # 未启用卡拉OK时的后缀
 KARAOKE_SUFFIX = ' (ASS)'         # 启用卡拉OK时的后缀
 
@@ -153,6 +169,35 @@ class MainProcessor:
         self.karaoke_processor_path = self.detect_module_path("k.py")
         self.prompter_converter_path = self.detect_module_path("T.py")  # 新增提词器转换器
         self.cache_dir = None
+        # 初始化工具路径
+        self.mkvmerge_path = self.detect_mkvmerge_path()
+        self.ffmpeg_path = self.detect_ffmpeg_path()
+    
+    def detect_mkvmerge_path(self):
+        """检测MKVToolNix路径"""
+        # 项目自带的MKVToolNix路径
+        project_mkvmerge = Path(__file__).parent.parent / "SRT" / "Python" / "MKVToolNix" / "mkvmerge.exe"
+        if project_mkvmerge.exists():
+            return str(project_mkvmerge)
+        # 尝试在Python目录下查找
+        python_mkvmerge = Path(__file__).parent.parent / "Python" / "MKVToolNix" / "mkvmerge.exe"
+        if python_mkvmerge.exists():
+            return str(python_mkvmerge)
+        # 系统PATH中的mkvmerge
+        return "mkvmerge"
+    
+    def detect_ffmpeg_path(self):
+        """检测ffmpeg路径"""
+        # 项目自带的ffmpeg路径
+        project_ffmpeg = Path(__file__).parent.parent / "SRT" / "Python" / "ffmpeg" / "ffmpeg.exe"
+        if project_ffmpeg.exists():
+            return str(project_ffmpeg)
+        # 尝试在Python目录下查找
+        python_ffmpeg = Path(__file__).parent.parent / "Python" / "ffmpeg" / "ffmpeg.exe"
+        if python_ffmpeg.exists():
+            return str(python_ffmpeg)
+        # 系统PATH中的ffmpeg
+        return "ffmpeg"
 
     def detect_python_path(self):
         python_path = sys.executable
@@ -183,26 +228,89 @@ class MainProcessor:
 
     def run_command_safe(self, cmd, timeout=30, capture_output=True):
         try:
-            result = subprocess.run(
-                cmd, 
-                capture_output=capture_output,
-                timeout=timeout,
-                shell=False,
-                encoding='utf-8',
-                errors='ignore'
-            )
             if capture_output:
-                return result.returncode, result.stdout, result.stderr
+                # 使用PIPE捕获输出
+                result = subprocess.run(
+                    cmd, 
+                    capture_output=True,
+                    timeout=timeout,
+                    shell=False,
+                    encoding='utf-8',
+                    errors='ignore'
+                )
+                # 过滤掉进度信息
+                filtered_stdout = []
+                for line in result.stdout.split('\n'):
+                    line = line.strip()
+                    # 过滤掉Progress: X%和其他不需要的输出
+                    if line and not line.startswith('Progress: ') and not line.startswith('Extracting track'):
+                        filtered_stdout.append(line)
+                filtered_stderr = []
+                for line in result.stderr.split('\n'):
+                    line = line.strip()
+                    if line and not line.startswith('Progress: ') and not line.startswith('Extracting track'):
+                        filtered_stderr.append(line)
+                return result.returncode, '\n'.join(filtered_stdout), '\n'.join(filtered_stderr)
             else:
-                return result.returncode, "", ""
-        except subprocess.TimeoutExpired:
-            return -1, "", "命令执行超时"
+                # 对于不捕获输出的情况，使用PIPE并手动处理
+                process = subprocess.Popen(
+                    cmd, 
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    shell=False,
+                    encoding='utf-8',
+                    errors='ignore'
+                )
+                
+                stdout_lines = []
+                stderr_lines = []
+                
+                try:
+                    # 等待命令完成，同时处理输出
+                    stdout, stderr = process.communicate(timeout=timeout)
+                    
+                    # 过滤掉进度信息
+                    for line in stdout.split('\n'):
+                        line = line.strip()
+                        if line and not line.startswith('Progress: ') and not line.startswith('Extracting track'):
+                            stdout_lines.append(line)
+                    for line in stderr.split('\n'):
+                        line = line.strip()
+                        if line and not line.startswith('Progress: ') and not line.startswith('Extracting track'):
+                            stderr_lines.append(line)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    return -1, "", "命令执行超时"
+                except Exception as e:
+                    process.kill()
+                    return -1, "", f"命令执行失败: {str(e)}"
+                
+                return process.returncode, '\n'.join(stdout_lines), '\n'.join(stderr_lines)
         except Exception as e:
             return -1, "", f"命令执行失败: {str(e)}"
 
     def is_subtitle_file(self, file_path):
-        subtitle_extensions = {'.srt', '.ass', '.ssa', '.vtt', '.lrc'}
+        subtitle_extensions = {'.srt', '.ass', '.ssa', '.vtt', '.lrc', '.txt'}
         return Path(file_path).suffix.lower() in subtitle_extensions
+    
+    def detect_file_content_format(self, file_path):
+        """检测文件内容格式"""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read(10000)  # 读取前10000个字符进行检测
+            
+            if '[Script Info]' in content and '[Events]' in content:
+                return 'ass'
+            elif any('--> ' in line for line in content.split('\n')):
+                return 'srt'
+            elif any('WEBVTT' in line for line in content.split('\n')):
+                return 'vtt'
+            elif any(re.match(r'^\[\d{2}:\d{2}\.\d{2}\]', line) for line in content.split('\n')):
+                return 'lrc'
+            else:
+                return 'txt'
+        except Exception:
+            return 'txt'
 
     def clean_subtitle_filename(self, filename):
         patterns_to_remove = [
@@ -299,31 +407,51 @@ class MainProcessor:
 
     def advanced_video_matching(self, subtitle_stem, current_dir, video_extensions):
         matches = []
-        video_files = []
+        # 使用集合避免重复收集同一文件（Windows文件系统不区分大小写）
+        video_files = set()
         for ext in video_extensions:
-            video_files.extend(current_dir.glob(f"*{ext}"))
-            video_files.extend(current_dir.glob(f"*{ext.upper()}"))
+            # 只需要查找小写扩展名，因为glob在Windows上不区分大小写
+            video_files.update(current_dir.glob(f"*{ext}"))
         if not video_files:
             return []
         subtitle_clean = self.clean_subtitle_filename(subtitle_stem).lower()
         for video_file in video_files:
             video_stem = video_file.stem
             video_clean = self.clean_subtitle_filename(video_stem).lower()
+            # 检查文件是否已经在匹配列表中
+            if video_file in matches:
+                continue
+            # 精确匹配优先
             if subtitle_clean == video_clean:
                 matches.append(video_file)
                 continue
+            # 包含关系匹配
             if subtitle_clean in video_clean or video_clean in subtitle_clean:
                 matches.append(video_file)
                 continue
-            subtitle_parts = re.split(r'[_\-\s\.\(\)\[\]]+', subtitle_clean)
-            video_parts = re.split(r'[_\-\s\.\(\)\[\]]+', video_clean)
-            common_parts = set(subtitle_parts) & set(video_parts)
-            if len(common_parts) >= max(1, min(len(subtitle_parts), len(video_parts)) * 0.6):
-                matches.append(video_file)
-                continue
+            # 更严格的公共部分匹配：要求至少有2个公共部分，且占总部分的70%以上
+            subtitle_parts = [part for part in re.split(r'[_\-\s\.\(\)\[\]]+', subtitle_clean) if part]
+            video_parts = [part for part in re.split(r'[_\-\s\.\(\)\[\]]+', video_clean) if part]
+            if subtitle_parts and video_parts:
+                common_parts = set(subtitle_parts) & set(video_parts)
+                if len(common_parts) >= 2 and len(common_parts) >= max(2, min(len(subtitle_parts), len(video_parts)) * 0.7):
+                    matches.append(video_file)
+                    continue
+            # 改进的艺术家歌曲模式匹配：要求艺术家或歌曲名至少有50%的字符匹配
             if self.match_artist_song_pattern(subtitle_clean, video_clean):
                 matches.append(video_file)
-        matches.sort(key=lambda x: self.calculate_match_score(subtitle_clean, x.stem.lower()))
+        # 对匹配结果进行排序，分数高的排在前面
+        matches.sort(key=lambda x: self.calculate_match_score(subtitle_clean, x.stem.lower()), reverse=True)
+        # 去重，确保每个文件只出现一次
+        unique_matches = []
+        seen_files = set()
+        for match in matches:
+            # 使用文件的绝对路径作为唯一标识
+            file_key = str(match.absolute())
+            if file_key not in seen_files:
+                seen_files.add(file_key)
+                unique_matches.append(match)
+        matches = unique_matches
         if matches:
             print(f"✓ 高级匹配找到 {len(matches)} 个候选视频")
             for i, match in enumerate(matches[:3]):
@@ -341,20 +469,65 @@ class MainProcessor:
             if sub_match and vid_match:
                 sub_artist, sub_song = sub_match.groups()
                 vid_artist, vid_song = vid_match.groups()
-                if (sub_artist in vid_artist or vid_artist in sub_artist or
-                    sub_song in vid_song or vid_song in sub_song):
+                
+                # 计算字符串相似度，要求至少50%匹配
+                def calculate_similarity(str1, str2):
+                    if not str1 or not str2:
+                        return 0.0
+                    # 使用集合计算交集
+                    intersection = set(str1) & set(str2)
+                    # 使用最长字符串长度作为分母
+                    max_len = max(len(str1), len(str2))
+                    return len(intersection) / max_len
+                
+                # 要求艺术家或歌曲名至少有50%的字符匹配
+                artist_similarity = calculate_similarity(sub_artist, vid_artist)
+                song_similarity = calculate_similarity(sub_song, vid_song)
+                
+                if artist_similarity >= 0.5 or song_similarity >= 0.5:
                     return True
         return False
 
     def calculate_match_score(self, subtitle_clean, video_stem):
+        if not subtitle_clean or not video_stem:
+            return 0
+        
         score = 0
+        
+        # 1. 精确匹配奖励
+        if subtitle_clean == video_stem:
+            return 1000
+        
+        # 2. 长度差异惩罚（更严格）
         length_diff = abs(len(subtitle_clean) - len(video_stem))
-        score -= length_diff * 0.1
-        common_chars = set(subtitle_clean) & set(video_stem)
-        score += len(common_chars) * 0.5
-        for i in range(min(len(subtitle_clean), len(video_stem))):
+        max_len = max(len(subtitle_clean), len(video_stem))
+        length_ratio = length_diff / max_len if max_len > 0 else 0
+        score -= length_ratio * 50
+        
+        # 3. 前缀匹配奖励（连续匹配更重要）
+        min_len = min(len(subtitle_clean), len(video_stem))
+        prefix_score = 0
+        for i in range(min_len):
             if subtitle_clean[i] == video_stem[i]:
-                score += 1
+                prefix_score += 5  # 连续匹配字符奖励更高
+            else:
+                break  # 停止计数不连续的匹配
+        score += prefix_score
+        
+        # 4. 公共字符奖励（考虑字符频率）
+        common_chars = set(subtitle_clean) & set(video_stem)
+        if common_chars:
+            common_ratio = len(common_chars) / max_len
+            score += common_ratio * 30
+        
+        # 5. 整体相似度（使用编辑距离概念）
+        # 简化的编辑距离计算：计算相同字符的位置数量
+        match_positions = 0
+        for char in common_chars:
+            match_positions += min(subtitle_clean.count(char), video_stem.count(char))
+        similarity = match_positions / max_len if max_len > 0 else 0
+        score += similarity * 20
+        
         return score
 
     def manual_select_video(self, directory):
@@ -404,62 +577,132 @@ class MainProcessor:
             except (ValueError, IndexError):
                 print("无效选择，请重新输入")
 
-    def generate_incremental_filename(self, input_path, marker, extension):
+    def generate_incremental_filename(self, input_path, marker, extension, output_dir=None):
         input_path = Path(input_path)
         stem = input_path.stem
+        # 清理stem，移除现有的标记和计数器
         clean_stem = re.sub(rf'{re.escape(marker)}\s*(\(\d+\))?\s*$', '', stem).strip()
         clean_stem = re.sub(r'\s+\(\d+\)\s*$', '', clean_stem).strip()
+        # 处理(ASS)标记
+        if ' (ASS)' in clean_stem:
+            clean_stem = clean_stem.replace(' (ASS)', '')
+        # 处理(ASS_1)标记
+        if ' (ASS_1)' in clean_stem:
+            clean_stem = clean_stem.replace(' (ASS_1)', '')
         counter = 1
+        # 确定检查目录
+        check_dir = Path(output_dir) if output_dir else input_path.parent
         while True:
             if counter == 1:
                 new_filename = f"{clean_stem}{marker}{extension}"
             else:
                 new_filename = f"{clean_stem}{marker} ({counter}){extension}"
-            new_path = input_path.parent / new_filename
+            new_path = check_dir / new_filename
             if not new_path.exists():
                 return new_path
             counter += 1
 
-    def process_output_video_filename(self, input_path, karaoke_mode=True):
+    def process_output_video_filename(self, input_path, karaoke_mode=True, real_karaoke_effect=0, output_dir=None):
         input_path = Path(input_path)
         stem = input_path.stem
-        if karaoke_mode:
-            target_marker = KARAOKE_SUFFIX
+        
+        # 根据real_karaoke_effect确定目标标记
+        if real_karaoke_effect == 'A':  # 全选模式
+            # 全选模式：使用 (ASS) 标记
+            target_marker = ' (ASS)'
+            # 原文件带(ASS) 标签 将(ASS) 改成(ASS)
+            if ' (ASS)' in stem:
+                new_stem = stem.replace(' (ASS)', target_marker)
+            else:
+                new_stem = stem + target_marker
+        elif real_karaoke_effect == 1 or real_karaoke_effect == 2 or str(real_karaoke_effect) in ['1', '2']:  # KTV效果或提词器效果
+            # 非默认效果：使用 (ASS_1) 标记
+            target_marker = ' (ASS_1)'
+            # 原文件带(ASS) 标签 将(ASS) 改成(ASS_1)
+            if ' (ASS)' in stem:
+                new_stem = stem.replace(' (ASS)', target_marker)
+            else:
+                new_stem = stem + target_marker
+        else:  # 默认效果
+            if karaoke_mode:
+                target_marker = KARAOKE_SUFFIX
+            else:
+                target_marker = NO_KARAOKE_SUFFIX
+            # 如果是默认效果源文件带(ASS) 则无需添加(ASS)
+            if ' (ASS)' in stem and karaoke_mode:
+                new_stem = stem
+            else:
+                new_stem = stem
+                for replace_marker in OUTPUT_REPLACE_MARKERS:
+                    if replace_marker in new_stem:
+                        new_stem = new_stem.replace(replace_marker, target_marker)
+                        break
+                if new_stem == stem and karaoke_mode:
+                    new_stem = f"{stem}{target_marker}"
+        
+        # 检查输出目录是否指定
+        if output_dir:
+            output_dir = Path(output_dir)
+            output_path = output_dir / f"{new_stem}.mkv"
         else:
-            target_marker = NO_KARAOKE_SUFFIX
-        if target_marker in stem:
-            return self.generate_incremental_filename(input_path, target_marker, '.mkv')
-        new_stem = stem
-        for replace_marker in OUTPUT_REPLACE_MARKERS:
-            if replace_marker in new_stem:
-                new_stem = new_stem.replace(replace_marker, target_marker)
-                break
-        if new_stem == stem:
-            new_stem = f"{stem}{target_marker}"
-        output_path = input_path.parent / f"{new_stem}.mkv"
+            output_dir = input_path.parent
+            output_path = output_dir / f"{new_stem}.mkv"
+        
+        # 检查文件是否存在，如果存在则生成递增文件名
         if output_path.exists():
-            return self.generate_incremental_filename(input_path, target_marker, '.mkv')
+            # 直接在输出目录生成递增文件名
+            return self.generate_incremental_filename(input_path, target_marker, '.mkv', output_dir)
         return output_path
 
-    def process_output_filename(self, input_path, karaoke_mode=False, is_batch=False):
+    def process_output_filename(self, input_path, karaoke_mode=False, is_batch=False, real_karaoke_effect=0, output_dir=None):
         input_path = Path(input_path)
         stem = input_path.stem
-        if karaoke_mode:
-            target_marker = KARAOKE_SUFFIX
+        
+        # 根据real_karaoke_effect确定目标标记
+        if real_karaoke_effect == 'A':  # 全选模式
+            # 全选模式：使用 (ASS) 标记
+            target_marker = ' (ASS)'
+            # 原文件带(ASS) 标签 将(ASS) 改成(ASS)
+            if ' (ASS)' in stem:
+                new_stem = stem.replace(' (ASS)', target_marker)
+            else:
+                new_stem = stem + target_marker
+        elif real_karaoke_effect == 1 or real_karaoke_effect == 2 or str(real_karaoke_effect) in ['1', '2']:  # KTV效果或提词器效果
+            # 非默认效果：使用 (ASS_1) 标记
+            target_marker = ' (ASS_1)'
+            # 原文件带(ASS) 标签 将(ASS) 改成(ASS_1)
+            if ' (ASS)' in stem:
+                new_stem = stem.replace(' (ASS)', target_marker)
+            else:
+                new_stem = stem + target_marker
+        else:  # 默认效果
+            if karaoke_mode:
+                target_marker = KARAOKE_SUFFIX
+            else:
+                target_marker = NO_KARAOKE_SUFFIX
+            # 如果是默认效果源文件带(ASS) 则无需添加(ASS)
+            if ' (ASS)' in stem and karaoke_mode:
+                new_stem = stem
+            else:
+                new_stem = stem
+                for replace_marker in OUTPUT_REPLACE_MARKERS:
+                    if replace_marker in new_stem:
+                        new_stem = new_stem.replace(replace_marker, target_marker)
+                        break
+                if new_stem == stem and karaoke_mode:
+                    new_stem = f"{stem}{target_marker}"
+        
+        # 确定输出目录
+        if output_dir:
+            output_dir = Path(output_dir)
+            output_path = output_dir / f"{new_stem}.ass"
         else:
-            target_marker = NO_KARAOKE_SUFFIX
-        if target_marker in stem:
-            return self.generate_incremental_filename(input_path, target_marker, '.ass')
-        new_stem = stem
-        for replace_marker in OUTPUT_REPLACE_MARKERS:
-            if replace_marker in new_stem:
-                new_stem = new_stem.replace(replace_marker, target_marker)
-                break
-        if new_stem == stem:
-            new_stem = f"{stem}{target_marker}"
-        output_path = input_path.parent / f"{new_stem}.ass"
+            output_dir = input_path.parent
+            output_path = output_dir / f"{new_stem}.ass"
+        
+        # 与原文件重名则在后面 添加（1）序列号（）
         if output_path.exists():
-            return self.generate_incremental_filename(input_path, target_marker, '.ass')
+            return self.generate_incremental_filename(input_path, target_marker, '.ass', output_dir)
         return output_path
 
     def get_subtitle_converter(self):
@@ -473,7 +716,7 @@ class MainProcessor:
             print(f"导入字幕转换器失败: {e}")
             return SimpleSubtitleConverter()
 
-    def convert_subtitle_only(self, subtitle_path, karaoke_effect=True, output_dir=None):
+    def convert_subtitle_only(self, subtitle_path, karaoke_effect=True, output_dir=None, real_karaoke_effect=0):
         subtitle_path = Path(subtitle_path)
         if output_dir is None:
             output_dir = subtitle_path.parent
@@ -485,10 +728,14 @@ class MainProcessor:
         print("=" * 60)
         print(f"输入字幕: {subtitle_path.name}")
         print(f"卡拉OK效果: {'开启' if karaoke_effect else '关闭'}")
+        if real_karaoke_effect == 'A':
+            print(f"真实卡拉OK效果: 全部效果打包")
+        else:
+            print(f"真实卡拉OK效果: {'KTV效果' if real_karaoke_effect == 1 or real_karaoke_effect == '1' else '提词器效果' if real_karaoke_effect == 2 or real_karaoke_effect == '2' else '默认'}")
         print(f"输出目录: {output_dir}")
         try:
             converter = self.get_subtitle_converter()
-            output_filename = converter.process_output_filename(subtitle_path, karaoke_effect, False)
+            output_filename = converter.process_output_filename(subtitle_path, karaoke_effect, False, real_karaoke_effect)
             if output_filename is None:
                 output_filename = subtitle_path.parent / f"{subtitle_path.stem}_converted.ass"
             output_path = output_dir / output_filename.name
@@ -498,14 +745,16 @@ class MainProcessor:
                 output_path, 
                 enable_custom_font=True,
                 karaoke_mode=karaoke_effect,
-                is_batch=False
+                is_batch=False,
+                real_karaoke_effect=real_karaoke_effect
             )
             if result:
                 print(f"\n✓ 字幕转换完成: {result}")
                 return {
                     'input_subtitle': subtitle_path,
                     'output_subtitle': result,
-                    'karaoke_effect': karaoke_effect
+                    'karaoke_effect': karaoke_effect,
+                    'real_karaoke_effect': real_karaoke_effect
                 }
             else:
                 print("× 字幕转换失败")
@@ -518,7 +767,7 @@ class MainProcessor:
         try:
             if not self.check_mkvtoolnix_available():
                 return {'subtitle_tracks': []}
-            cmd = ['mkvmerge', '--identification-format', 'json', '--identify', str(video_path)]
+            cmd = [self.mkvmerge_path, '--identification-format', 'json', '--identify', str(video_path)]
             returncode, stdout, stderr = self.run_command_safe(cmd, timeout=60)
             if returncode == 0 and stdout:
                 try:
@@ -545,18 +794,20 @@ class MainProcessor:
                         language = track.get('properties', {}).get('language_ietf', 'und')
                     is_default = track.get('properties', {}).get('default_track', False)
                     codec = track.get('codec', 'unknown')
+                    track_name = track.get('properties', {}).get('track_name', '')
                     subtitle_tracks.append({
                         'track_id': track_id,
                         'language': language,
                         'default': is_default,
-                        'codec': codec
+                        'codec': codec,
+                        'track_name': track_name
                     })
         subtitle_tracks.sort(key=lambda x: int(x['track_id']) if x['track_id'].isdigit() else 0)
         return {'subtitle_tracks': subtitle_tracks}
 
     def parse_mkvmerge_text_info(self, video_path):
         try:
-            cmd = ['mkvmerge', '-i', str(video_path)]
+            cmd = [self.mkvmerge_path, '-i', str(video_path)]
             returncode, stdout, stderr = self.run_command_safe(cmd)
             if returncode != 0:
                 return {'subtitle_tracks': []}
@@ -573,10 +824,15 @@ class MainProcessor:
                         if lang_match:
                             language = lang_match.group(1).lower()
                         is_default = 'default track: yes' in line.lower()
+                        track_name = ''
+                        name_match = re.search(r'name:([^,]+)', line, re.IGNORECASE)
+                        if name_match:
+                            track_name = name_match.group(1).strip()
                         subtitle_tracks.append({
                             'track_id': track_id,
                             'language': language,
-                            'default': is_default
+                            'default': is_default,
+                            'track_name': track_name
                         })
             subtitle_tracks.sort(key=lambda x: int(x['track_id']) if x['track_id'].isdigit() else 0)
             return {'subtitle_tracks': subtitle_tracks}
@@ -589,8 +845,12 @@ class MainProcessor:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             if output_path.exists():
                 output_path.unlink()
+            # 检测mkvextract路径
+            mkvextract_path = self.mkvmerge_path.replace('mkvmerge.exe', 'mkvextract.exe')
+            if not os.path.exists(mkvextract_path):
+                mkvextract_path = 'mkvextract'
             cmd = [
-                'mkvextract', 'tracks', str(video_path),
+                mkvextract_path, 'tracks', str(video_path),
                 f"{track_id}:{output_path}"
             ]
             returncode, stdout, stderr = self.run_command_safe(cmd, timeout=60, capture_output=False)
@@ -611,15 +871,42 @@ class MainProcessor:
             print("未检测到内置字幕轨道")
             return []
         print(f"检测到 {len(subtitle_tracks_info)} 个字幕轨道")
+        
+        # 检查文件名是否包含 (ASS) 标签
+        video_path = Path(video_path)
+        is_ass_a_file = '(ASS)' in video_path.name
+        
+        # 过滤字幕轨道：如果是 (ASS) 文件，忽略 KTV 和提词器效果字幕
+        filtered_tracks_info = []
+        if is_ass_a_file:
+            print("\n检测到 (ASS) 文件，应用多效果逻辑...")
+            for track in subtitle_tracks_info:
+                track_name = track.get('track_name', '').lower()
+                # 忽略 KTV 效果和提词器效果的字幕轨道
+                if 'ktv' not in track_name and '提词器' not in track_name and 'prompter' not in track_name:
+                    filtered_tracks_info.append(track)
+                    print(f"  保留轨道 {track['track_id']}: 名称='{track.get('track_name', '')}'")
+                else:
+                    print(f"  忽略轨道 {track['track_id']}: 名称='{track.get('track_name', '')}'")
+            
+            # 如果过滤后没有轨道，保留所有轨道
+            if not filtered_tracks_info:
+                print("  过滤后没有轨道，保留所有轨道")
+                filtered_tracks_info = subtitle_tracks_info
+        else:
+            filtered_tracks_info = subtitle_tracks_info
+        
+        # 提取过滤后的字幕轨道
         extracted_subtitles = []
-        for track_info in subtitle_tracks_info:
+        for track_info in filtered_tracks_info:
             track_id = track_info['track_id']
             language = track_info['language']
             is_default = track_info['default']
+            track_name = track_info.get('track_name', '')
             if language == 'und':
                 language = 'chi'
                 track_info['language'] = language
-            print(f"处理字幕轨道 {track_id}: 语言={language}, 默认={is_default}")
+            print(f"处理字幕轨道 {track_id}: 语言={language}, 默认={is_default}, 名称='{track_name}'")
             output_subtitle = self.cache_dir / f"subtitle_{track_id}_{language}.ass"
             if self.extract_subtitle_with_mkvextract(video_path, track_id, output_subtitle):
                 track_info['path'] = output_subtitle
@@ -718,6 +1005,15 @@ class MainProcessor:
     def process_with_external_subtitle(self, video_path, subtitle_path, karaoke_effect=True, output_dir=None, enable_packing=True, enable_custom_font=True, use_vocal_separation=True, real_karaoke_effect=False):
         video_path = Path(video_path)
         subtitle_path = Path(subtitle_path)
+        
+        # 检查文件是否包含(ASS_1)标签
+        has_ass1_tag = ' (ASS_1)' in video_path.name or ' (ASS_1)' in subtitle_path.name
+        if has_ass1_tag:
+            print("⚠️  检测到(ASS_1)标签，暂时不支持效果转换")
+            # 跳过效果转换，但保留其他操作
+            karaoke_effect = False
+            real_karaoke_effect = 0
+        
         default_output_dir = video_path.parent
         output_dir = self.validate_output_dir(output_dir, default_output_dir, video_path)
         print("=" * 60)
@@ -726,7 +1022,10 @@ class MainProcessor:
         print(f"视频文件: {video_path.name}")
         print(f"字幕文件: {subtitle_path.name}")
         print(f"卡拉OK效果: {'开启' if karaoke_effect else '关闭'}")
-        print(f"真实卡拉OK效果: {'开启' if real_karaoke_effect else '关闭'}")
+        if real_karaoke_effect == 'A':
+            print(f"真实卡拉OK效果: 全部效果打包")
+        else:
+            print(f"真实卡拉OK效果: {'KTV效果' if real_karaoke_effect == 1 or real_karaoke_effect == '1' else '提词器效果' if real_karaoke_effect == 2 or real_karaoke_effect == '2' else '默认'}")
         print(f"MKV打包: {'开启' if enable_packing else '关闭'}")
         print(f"输出目录: {output_dir}")
         subtitle_language = 'chi'
@@ -742,16 +1041,93 @@ class MainProcessor:
         calibrated_subtitle_path = self.cache_dir / f"calibrated_{subtitle_path.stem}.ass"
         if calibrated_subtitle_path.exists():
             calibrated_subtitle_path.unlink()
+        # 当禁用卡拉OK效果时，移除卡拉OK标签
         calibrated_subtitle = self.call_subtitle_calibrator(
-            calibration_audio, subtitle_path, calibrated_subtitle_path
+            calibration_audio, subtitle_path, calibrated_subtitle_path, not karaoke_effect
         )
         if not calibrated_subtitle:
             print("字幕校准失败，使用原始字幕")
             calibrated_subtitle = subtitle_path
         print("\n步骤3: 卡拉OK转换")
         print("-" * 30)
+        # 处理卡拉OK转换
+        final_subtitles = []
         if karaoke_effect:
-            if real_karaoke_effect == 1:  # 真实卡拉OK效果
+            if str(real_karaoke_effect) == 'A':  # 全选模式，生成所有效果
+                print("\n启用全选模式，生成所有卡拉OK效果...")
+                
+                # 生成默认效果
+                print("\n1. 生成默认效果...")
+                karaoke_subtitle_path_0 = self.cache_dir / f"karaoke_default_{subtitle_path.stem}.ass"
+                if karaoke_subtitle_path_0.exists():
+                    karaoke_subtitle_path_0.unlink()
+                default_subtitle = self.call_karaoke_converter(
+                    calibrated_subtitle, calibration_audio, karaoke_subtitle_path_0, karaoke_effect=True
+                )
+                if default_subtitle:
+                    final_subtitles.append({
+                        'language': subtitle_language,
+                        'final_subtitle': default_subtitle,
+                        'is_default': True,
+                        'original_track_id': '1',
+                        'effect': 'default'
+                    })
+                
+                # 生成KTV效果
+                print("\n2. 生成KTV效果...")
+                ktv_subtitle = self.process_real_karaoke(
+                    calibrated_subtitle, calibration_audio, None
+                )
+                if not ktv_subtitle:
+                    print("KTV效果处理失败，使用标准卡拉OK流程")
+                    karaoke_subtitle_path_1 = self.cache_dir / f"karaoke_ktv_{subtitle_path.stem}.ass"
+                    if karaoke_subtitle_path_1.exists():
+                        karaoke_subtitle_path_1.unlink()
+                    ktv_subtitle = self.call_karaoke_converter(
+                        calibrated_subtitle, calibration_audio, karaoke_subtitle_path_1, karaoke_effect=True
+                    )
+                if ktv_subtitle:
+                    final_subtitles.append({
+                        'language': subtitle_language,
+                        'final_subtitle': ktv_subtitle,
+                        'is_default': False,
+                        'original_track_id': '2',
+                        'effect': 'ktv'
+                    })
+                
+                # 生成提词器效果
+                print("\n3. 生成提词器效果...")
+                prompter_subtitle = self.process_prompter_effect(
+                    calibrated_subtitle, calibration_audio, None
+                )
+                if not prompter_subtitle:
+                    print("提词器效果处理失败，使用标准卡拉OK流程")
+                    karaoke_subtitle_path_2 = self.cache_dir / f"karaoke_prompter_{subtitle_path.stem}.ass"
+                    if karaoke_subtitle_path_2.exists():
+                        karaoke_subtitle_path_2.unlink()
+                    prompter_subtitle = self.call_karaoke_converter(
+                        calibrated_subtitle, calibration_audio, karaoke_subtitle_path_2, karaoke_effect=True
+                    )
+                if prompter_subtitle:
+                    final_subtitles.append({
+                        'language': subtitle_language,
+                        'final_subtitle': prompter_subtitle,
+                        'is_default': False,
+                        'original_track_id': '3',
+                        'effect': 'prompter'
+                    })
+                
+                # 如果没有生成任何字幕，使用校准后的字幕
+                if not final_subtitles:
+                    print("所有卡拉OK效果生成失败，使用校准后的字幕")
+                    final_subtitles.append({
+                        'language': subtitle_language,
+                        'final_subtitle': calibrated_subtitle,
+                        'is_default': True,
+                        'original_track_id': '1',
+                        'effect': 'default'
+                    })
+            elif real_karaoke_effect == 1:  # 真实卡拉OK效果
                 print("启用真实卡拉OK效果处理流程...")
                 final_subtitle = self.process_real_karaoke(
                     calibrated_subtitle, calibration_audio, None
@@ -764,6 +1140,13 @@ class MainProcessor:
                     final_subtitle = self.call_karaoke_converter(
                         calibrated_subtitle, calibration_audio, karaoke_subtitle_path, karaoke_effect=True
                     )
+                final_subtitles.append({
+                    'language': subtitle_language,
+                    'final_subtitle': final_subtitle,
+                    'is_default': True,
+                    'original_track_id': '1',
+                    'effect': 'ktv'
+                })
             elif real_karaoke_effect == 2:  # 提词器效果
                 print("启用提词器效果处理流程...")
                 final_subtitle = self.process_prompter_effect(
@@ -777,6 +1160,13 @@ class MainProcessor:
                     final_subtitle = self.call_karaoke_converter(
                         calibrated_subtitle, calibration_audio, karaoke_subtitle_path, karaoke_effect=True
                     )
+                final_subtitles.append({
+                    'language': subtitle_language,
+                    'final_subtitle': final_subtitle,
+                    'is_default': True,
+                    'original_track_id': '1',
+                    'effect': 'prompter'
+                })
             else:  # 标准卡拉OK效果
                 karaoke_subtitle_path = self.cache_dir / f"karaoke_{subtitle_path.stem}.ass"
                 if karaoke_subtitle_path.exists():
@@ -784,33 +1174,40 @@ class MainProcessor:
                 final_subtitle = self.call_karaoke_converter(
                     calibrated_subtitle, calibration_audio, karaoke_subtitle_path, karaoke_effect=True
                 )
-            if not final_subtitle:
-                print("卡拉OK转换失败，使用校准后的字幕")
-                final_subtitle = calibrated_subtitle
+                final_subtitles.append({
+                    'language': subtitle_language,
+                    'final_subtitle': final_subtitle,
+                    'is_default': True,
+                    'original_track_id': '1',
+                    'effect': 'default'
+                })
         else:
-            final_subtitle = calibrated_subtitle
+            # 不启用卡拉OK效果，只使用校准后的字幕
+            final_subtitles.append({
+                'language': subtitle_language,
+                'final_subtitle': calibrated_subtitle,
+                'is_default': True,
+                'original_track_id': '1',
+                'effect': 'none'
+            })
         mkv_result = None
         if enable_packing:
             print("\n步骤4: MKV打包")
             print("-" * 30)
-            output_mkv_path = self.process_output_video_filename(video_path, karaoke_effect)
+            output_mkv_path = self.process_output_video_filename(video_path, karaoke_effect, real_karaoke_effect, output_dir)
             output_mkv_path = output_dir / output_mkv_path.name
-            subtitle_track = {
-                'language': subtitle_language,
-                'final_subtitle': final_subtitle,
-                'is_default': True,
-                'original_track_id': '1'
-            }
+            
+            # 调用字幕替换打包器，传递所有生成的字幕轨道
             mkv_result = self.call_mkv_packer_subtitles_only(
                 video_path=video_path,
-                subtitle_tracks=[subtitle_track],
+                subtitle_tracks=final_subtitles,
                 output_path=output_mkv_path,
                 enable_custom_font=enable_custom_font
             )
         result = {
             'input_video': video_path,
             'input_subtitle': subtitle_path,
-            'final_subtitle': final_subtitle,
+            'final_subtitles': final_subtitles,
             'output_mkv': mkv_result,
             'output_dir': output_dir,
             'language': subtitle_language
@@ -821,7 +1218,10 @@ class MainProcessor:
         if mkv_result:
             print(f"输出视频: {mkv_result}")
         else:
-            print(f"处理后的字幕: {final_subtitle}")
+            if final_subtitles:
+                print(f"处理后的字幕轨道数量: {len(final_subtitles)}")
+                for i, track in enumerate(final_subtitles):
+                    print(f"  轨道{i+1}: {track['final_subtitle']}")
         return result
 
     def process_multilingual_subtitles(self, media_path, karaoke_effect=True, output_dir=None, enable_packing=True, enable_custom_font=True, use_vocal_separation=True, real_karaoke_effect=False):
@@ -859,15 +1259,90 @@ class MainProcessor:
             calibrated_subtitle_path = self.cache_dir / f"calibrated_{language}_{track_id}.ass"
             if calibrated_subtitle_path.exists():
                 calibrated_subtitle_path.unlink()
+            # 当禁用卡拉OK效果时，移除卡拉OK标签
             calibrated_subtitle = self.call_subtitle_calibrator(
-                calibration_audio, track_info['path'], calibrated_subtitle_path
+                calibration_audio, track_info['path'], calibrated_subtitle_path, not karaoke_effect
             )
             if not calibrated_subtitle:
                 print(f"    {lang_name}字幕校准失败，使用原始字幕")
                 calibrated_subtitle = track_info['path']
             print(f"  3.2 卡拉OK转换")
             if karaoke_effect:
-                if real_karaoke_effect == 1:  # 真实卡拉OK效果
+                if str(real_karaoke_effect) == 'A':  # 全选模式，生成所有效果
+                    print(f"    启用全选模式，生成所有卡拉OK效果...")
+                    
+                    # 生成默认效果
+                    print(f"    1. 生成默认效果...")
+                    karaoke_subtitle_path_0 = self.cache_dir / f"karaoke_default_{language}_{track_id}.ass"
+                    if karaoke_subtitle_path_0.exists():
+                        karaoke_subtitle_path_0.unlink()
+                    default_subtitle = self.call_karaoke_converter(
+                        calibrated_subtitle, calibration_audio, karaoke_subtitle_path_0, karaoke_effect=True
+                    )
+                    if default_subtitle:
+                        processed_subtitles.append({
+                            'language': language,
+                            'final_subtitle': default_subtitle,
+                            'is_default': is_default,
+                            'original_track_id': f'{track_id}_1',
+                            'effect': 'default'
+                        })
+                    
+                    # 生成KTV效果
+                    print(f"    2. 生成KTV效果...")
+                    ktv_subtitle = self.process_real_karaoke(
+                        calibrated_subtitle, calibration_audio, None
+                    )
+                    if not ktv_subtitle:
+                        print(f"    KTV效果处理失败，使用标准卡拉OK流程")
+                        karaoke_subtitle_path_1 = self.cache_dir / f"karaoke_ktv_{language}_{track_id}.ass"
+                        if karaoke_subtitle_path_1.exists():
+                            karaoke_subtitle_path_1.unlink()
+                        ktv_subtitle = self.call_karaoke_converter(
+                            calibrated_subtitle, calibration_audio, karaoke_subtitle_path_1, karaoke_effect=True
+                        )
+                    if ktv_subtitle:
+                        processed_subtitles.append({
+                            'language': language,
+                            'final_subtitle': ktv_subtitle,
+                            'is_default': False,
+                            'original_track_id': f'{track_id}_2',
+                            'effect': 'ktv'
+                        })
+                    
+                    # 生成提词器效果
+                    print(f"    3. 生成提词器效果...")
+                    prompter_subtitle = self.process_prompter_effect(
+                        calibrated_subtitle, calibration_audio, None
+                    )
+                    if not prompter_subtitle:
+                        print(f"    提词器效果处理失败，使用标准卡拉OK流程")
+                        karaoke_subtitle_path_2 = self.cache_dir / f"karaoke_prompter_{language}_{track_id}.ass"
+                        if karaoke_subtitle_path_2.exists():
+                            karaoke_subtitle_path_2.unlink()
+                        prompter_subtitle = self.call_karaoke_converter(
+                            calibrated_subtitle, calibration_audio, karaoke_subtitle_path_2, karaoke_effect=True
+                        )
+                    if prompter_subtitle:
+                        processed_subtitles.append({
+                            'language': language,
+                            'final_subtitle': prompter_subtitle,
+                            'is_default': False,
+                            'original_track_id': f'{track_id}_3',
+                            'effect': 'prompter'
+                        })
+                    
+                    # 如果没有生成任何字幕，使用校准后的字幕
+                    if not processed_subtitles or all(track['original_track_id'].split('_')[0] != str(track_id) for track in processed_subtitles):
+                        print(f"    所有卡拉OK效果生成失败，使用校准后的字幕")
+                        processed_subtitles.append({
+                            'language': language,
+                            'final_subtitle': calibrated_subtitle,
+                            'is_default': is_default,
+                            'original_track_id': f'{track_id}_1',
+                            'effect': 'default'
+                        })
+                elif real_karaoke_effect == 1:  # 真实卡拉OK效果
                     print(f"    启用真实卡拉OK效果处理流程...")
                     final_subtitle = self.process_real_karaoke(
                         calibrated_subtitle, calibration_audio, None
@@ -880,6 +1355,13 @@ class MainProcessor:
                         final_subtitle = self.call_karaoke_converter(
                             calibrated_subtitle, calibration_audio, karaoke_subtitle_path, karaoke_effect=True
                         )
+                    processed_subtitles.append({
+                        'language': language,
+                        'final_subtitle': final_subtitle,
+                        'is_default': is_default,
+                        'original_track_id': track_id,
+                        'effect': 'ktv'
+                    })
                 elif real_karaoke_effect == 2:  # 提词器效果
                     print(f"    启用提词器效果处理流程...")
                     final_subtitle = self.process_prompter_effect(
@@ -893,6 +1375,13 @@ class MainProcessor:
                         final_subtitle = self.call_karaoke_converter(
                             calibrated_subtitle, calibration_audio, karaoke_subtitle_path, karaoke_effect=True
                         )
+                    processed_subtitles.append({
+                        'language': language,
+                        'final_subtitle': final_subtitle,
+                        'is_default': is_default,
+                        'original_track_id': track_id,
+                        'effect': 'prompter'
+                    })
                 else:  # 标准卡拉OK效果
                     karaoke_subtitle_path = self.cache_dir / f"karaoke_{language}_{track_id}.ass"
                     if karaoke_subtitle_path.exists():
@@ -900,22 +1389,27 @@ class MainProcessor:
                     final_subtitle = self.call_karaoke_converter(
                         calibrated_subtitle, calibration_audio, karaoke_subtitle_path, karaoke_effect=True
                     )
-                if not final_subtitle:
-                    print(f"    {lang_name}卡拉OK转换失败，使用校准后的字幕")
-                    final_subtitle = calibrated_subtitle
+                    processed_subtitles.append({
+                        'language': language,
+                        'final_subtitle': final_subtitle,
+                        'is_default': is_default,
+                        'original_track_id': track_id,
+                        'effect': 'default'
+                    })
             else:
-                final_subtitle = calibrated_subtitle
-            processed_subtitles.append({
-                'language': language,
-                'final_subtitle': final_subtitle,
-                'is_default': is_default,
-                'original_track_id': track_id
-            })
+                # 不启用卡拉OK效果，只使用校准后的字幕
+                processed_subtitles.append({
+                    'language': language,
+                    'final_subtitle': calibrated_subtitle,
+                    'is_default': is_default,
+                    'original_track_id': track_id,
+                    'effect': 'none'
+                })
         mkv_result = None
         if enable_packing:
             print("\n步骤4: MKV打包（保留原视频音频）")
             print("-" * 40)
-            output_mkv_path = self.process_output_video_filename(media_path, karaoke_effect)
+            output_mkv_path = self.process_output_video_filename(media_path, karaoke_effect, real_karaoke_effect, output_dir)
             if output_dir != media_path.parent:
                 output_mkv_path = output_dir / output_mkv_path.name
             mkv_result = self.call_mkv_packer_subtitles_only(
@@ -956,14 +1450,23 @@ class MainProcessor:
         return language_names.get(language_code.lower(), f"语言{language_code}")
 
     def process_single_video_file(self, video_path, karaoke_effect=True, output_dir=None, enable_packing=True, enable_custom_font=True, use_vocal_separation=True, real_karaoke_effect=False):
+        video_path = Path(video_path)
+        
+        # 检查文件是否包含(ASS_1)标签
+        has_ass1_tag = ' (ASS_1)' in video_path.name
+        if has_ass1_tag:
+            print("⚠️  检测到(ASS_1)标签，暂时不支持效果转换")
+            # 跳过效果转换，但保留其他操作
+            karaoke_effect = False
+            real_karaoke_effect = 0
+        
         print("检测文件字幕轨道信息...")
         subtitle_tracks = self.extract_all_internal_subtitles(video_path)
-        video_path = Path(video_path)
         default_output_dir = video_path.parent
-        output_dir = self.validate_output_dir(output_dir, default_output_dir, video_path)
-        output_path = self.process_output_video_filename(video_path, karaoke_effect)
-        if output_dir != video_path.parent:
-            output_path = output_dir / output_path.name
+        validated_output_dir = self.validate_output_dir(output_dir, default_output_dir, video_path)
+        output_path = self.process_output_video_filename(video_path, karaoke_effect, real_karaoke_effect, validated_output_dir)
+        if validated_output_dir != video_path.parent:
+            output_path = validated_output_dir / output_path.name
         if subtitle_tracks and len(subtitle_tracks) > 1:
             print(f"检测到多字幕文件: {len(subtitle_tracks)}个字幕轨道")
             print("找到的字幕轨道:")
@@ -973,21 +1476,22 @@ class MainProcessor:
                 print(f"  {i+1}. 轨道{track['track_id']}: {lang_name} ({track['language']}), {default_status}")
             if MULTI_SUBTITLE == 1:
                 print("启用多字幕处理（根据MULTI_SUBTITLE配置）")
-                result = self.process_multilingual_subtitles(video_path, karaoke_effect, output_dir, enable_packing, enable_custom_font, use_vocal_separation, real_karaoke_effect)
+                result = self.process_multilingual_subtitles(video_path, karaoke_effect, validated_output_dir, enable_packing, enable_custom_font, use_vocal_separation, real_karaoke_effect)
             else:
                 print("禁用多字幕处理，使用单字幕处理（根据MULTI_SUBTITLE配置）")
-                result = self.process_single_subtitle(video_path, karaoke_effect, output_dir, enable_packing, enable_custom_font, use_vocal_separation, real_karaoke_effect)
+                result = self.process_single_subtitle(video_path, karaoke_effect, validated_output_dir, enable_packing, enable_custom_font, use_vocal_separation, real_karaoke_effect)
         else:
-            result = self.process_single_subtitle(video_path, karaoke_effect, output_dir, enable_packing, enable_custom_font, use_vocal_separation, real_karaoke_effect)
+            result = self.process_single_subtitle(video_path, karaoke_effect, validated_output_dir, enable_packing, enable_custom_font, use_vocal_separation, real_karaoke_effect)
         return result
 
     def process_single_subtitle(self, media_path, karaoke_effect=True, output_dir=None, enable_packing=True, enable_custom_font=True, use_vocal_separation=True, real_karaoke_effect=False):
         media_path = Path(media_path)
         default_output_dir = media_path.parent
         output_dir = self.validate_output_dir(output_dir, default_output_dir, media_path)
-        print("=" * 60)
-        print("字幕处理工作流程：字幕校准 -> 卡拉OK生成 -> MKV打包")
-        print("=" * 60)
+        workflow_text = "字幕处理工作流程：字幕校准 -> 卡拉OK生成 -> MKV打包"
+        print("=" * len(workflow_text))
+        print(workflow_text)
+        print("=" * len(workflow_text))
         print(f"媒体文件: {media_path.name}")
         print(f"卡拉OK效果: {'开启' if karaoke_effect else '关闭'}")
         print(f"真实卡拉OK效果: {'开启' if real_karaoke_effect else '关闭'}")
@@ -999,19 +1503,45 @@ class MainProcessor:
         print("-" * 30)
         internal_subtitles = self.extract_all_internal_subtitles(media_path)
         subtitle_files = [st['path'] for st in internal_subtitles] if internal_subtitles else []
+        
+        # 检查文件名是否包含 (ASS) 标签
+        is_ass_a_file = '(ASS)' in media_path.name
+        
         if not subtitle_files:
-            for ext in ['.srt', '.ass', '.ssa', '.lrc', '.vtt']:
+            for ext in ['.srt', '.ass', '.ssa', '.lrc', '.vtt', '.txt']:
                 subtitle_files.extend(media_path.parent.glob(f"*{ext}"))
                 subtitle_files.extend(media_path.parent.glob(f"*{ext.upper()}"))
         if not subtitle_files:
             print("未找到任何字幕文件")
-            subtitle_path = input("请手动输入字幕文件路径: ").strip().strip('"')
-            if not subtitle_path:
+            try:
+                subtitle_path = input("请手动输入字幕文件路径: ").strip().strip('"')
+                if not subtitle_path:
+                    raise FileNotFoundError("未提供字幕文件路径")
+                subtitle_path = Path(subtitle_path)
+                if not subtitle_path.exists():
+                    raise FileNotFoundError(f"字幕文件不存在: {subtitle_path}")
+                subtitle_files = [subtitle_path]
+            except EOFError:
+                print("无法读取用户输入，跳过处理")
                 raise FileNotFoundError("未提供字幕文件路径")
-            subtitle_path = Path(subtitle_path)
-            if not subtitle_path.exists():
-                raise FileNotFoundError(f"字幕文件不存在: {subtitle_path}")
-            subtitle_files = [subtitle_path]
+        
+        # 对 (ASS) 文件特殊处理：如果有多个内置字幕，只使用默认效果的字幕
+        if is_ass_a_file and len(internal_subtitles) > 1:
+            print(f"\n检测到 (ASS) 文件，有 {len(internal_subtitles)} 个内置字幕轨道")
+            # 查找默认效果的字幕轨道
+            default_track = None
+            for st in internal_subtitles:
+                track_name = st.get('track_name', '').lower()
+                if '默认' in track_name or 'default' in track_name or not track_name:
+                    default_track = st
+                    break
+            if default_track:
+                print(f"使用默认效果字幕轨道: {default_track['track_id']}")
+                subtitle_files = [default_track['path']]
+            else:
+                print("未找到默认效果字幕轨道，使用第一个轨道")
+                subtitle_files = [internal_subtitles[0]['path']]
+        
         if len(subtitle_files) > 1:
             print("找到多个字幕文件:")
             for i, sub in enumerate(subtitle_files):
@@ -1036,7 +1566,11 @@ class MainProcessor:
                     break
         else:
             subtitle_language = self.detect_subtitle_language(subtitle_path)
+        
+        # 检测文件内容格式
+        content_format = self.detect_file_content_format(subtitle_path)
         print(f"检测到字幕语言: {self.get_language_name(subtitle_language)}")
+        print(f"文件内容格式: {content_format}")
         print("\n步骤2: 提取音频用于字幕校准")
         print("-" * 30)
         calibration_audio = self.extract_audio_for_calibration(media_path, use_vocal_separation)
@@ -1048,16 +1582,93 @@ class MainProcessor:
         calibrated_subtitle_path = self.cache_dir / f"calibrated_{subtitle_path.stem}.ass"
         if calibrated_subtitle_path.exists():
             calibrated_subtitle_path.unlink()
+        # 当禁用卡拉OK效果时，移除卡拉OK标签
         calibrated_subtitle = self.call_subtitle_calibrator(
-            calibration_audio, subtitle_path, calibrated_subtitle_path
+            calibration_audio, subtitle_path, calibrated_subtitle_path, not karaoke_effect
         )
         if not calibrated_subtitle:
             print("字幕校准失败，使用原始字幕")
             calibrated_subtitle = subtitle_path
         print("\n步骤4: 卡拉OK转换")
         print("-" * 30)
+        # 处理卡拉OK转换
+        final_subtitles = []
         if karaoke_effect:
-            if real_karaoke_effect == 1:  # 真实卡拉OK效果
+            if str(real_karaoke_effect) == 'A':  # 全选模式，生成所有效果
+                print("\n启用全选模式，生成所有卡拉OK效果...")
+                
+                # 生成默认效果
+                print("\n1. 生成默认效果...")
+                karaoke_subtitle_path_0 = self.cache_dir / f"karaoke_default_{subtitle_path.stem}.ass"
+                if karaoke_subtitle_path_0.exists():
+                    karaoke_subtitle_path_0.unlink()
+                default_subtitle = self.call_karaoke_converter(
+                    calibrated_subtitle, calibration_audio, karaoke_subtitle_path_0, karaoke_effect=True
+                )
+                if default_subtitle:
+                    final_subtitles.append({
+                        'language': subtitle_language,
+                        'final_subtitle': default_subtitle,
+                        'is_default': True,
+                        'original_track_id': '1',
+                        'effect': 'default'
+                    })
+                
+                # 生成KTV效果
+                print("\n2. 生成KTV效果...")
+                ktv_subtitle = self.process_real_karaoke(
+                    calibrated_subtitle, calibration_audio, None
+                )
+                if not ktv_subtitle:
+                    print("KTV效果处理失败，使用标准卡拉OK流程")
+                    karaoke_subtitle_path_1 = self.cache_dir / f"karaoke_ktv_{subtitle_path.stem}.ass"
+                    if karaoke_subtitle_path_1.exists():
+                        karaoke_subtitle_path_1.unlink()
+                    ktv_subtitle = self.call_karaoke_converter(
+                        calibrated_subtitle, calibration_audio, karaoke_subtitle_path_1, karaoke_effect=True
+                    )
+                if ktv_subtitle:
+                    final_subtitles.append({
+                        'language': subtitle_language,
+                        'final_subtitle': ktv_subtitle,
+                        'is_default': False,
+                        'original_track_id': '2',
+                        'effect': 'ktv'
+                    })
+                
+                # 生成提词器效果
+                print("\n3. 生成提词器效果...")
+                prompter_subtitle = self.process_prompter_effect(
+                    calibrated_subtitle, calibration_audio, None
+                )
+                if not prompter_subtitle:
+                    print("提词器效果处理失败，使用标准卡拉OK流程")
+                    karaoke_subtitle_path_2 = self.cache_dir / f"karaoke_prompter_{subtitle_path.stem}.ass"
+                    if karaoke_subtitle_path_2.exists():
+                        karaoke_subtitle_path_2.unlink()
+                    prompter_subtitle = self.call_karaoke_converter(
+                        calibrated_subtitle, calibration_audio, karaoke_subtitle_path_2, karaoke_effect=True
+                    )
+                if prompter_subtitle:
+                    final_subtitles.append({
+                        'language': subtitle_language,
+                        'final_subtitle': prompter_subtitle,
+                        'is_default': False,
+                        'original_track_id': '3',
+                        'effect': 'prompter'
+                    })
+                
+                # 如果没有生成任何字幕，使用校准后的字幕
+                if not final_subtitles:
+                    print("所有卡拉OK效果生成失败，使用校准后的字幕")
+                    final_subtitles.append({
+                        'language': subtitle_language,
+                        'final_subtitle': calibrated_subtitle,
+                        'is_default': True,
+                        'original_track_id': '1',
+                        'effect': 'default'
+                    })
+            elif real_karaoke_effect == 1:  # 真实卡拉OK效果
                 print("启用真实卡拉OK效果处理流程...")
                 final_subtitle = self.process_real_karaoke(
                     calibrated_subtitle, calibration_audio, None
@@ -1070,6 +1681,13 @@ class MainProcessor:
                     final_subtitle = self.call_karaoke_converter(
                         calibrated_subtitle, calibration_audio, karaoke_subtitle_path, karaoke_effect=True
                     )
+                final_subtitles.append({
+                    'language': subtitle_language,
+                    'final_subtitle': final_subtitle,
+                    'is_default': True,
+                    'original_track_id': '1',
+                    'effect': 'ktv'
+                })
             elif real_karaoke_effect == 2:  # 提词器效果
                 print("启用提词器效果处理流程...")
                 final_subtitle = self.process_prompter_effect(
@@ -1083,6 +1701,13 @@ class MainProcessor:
                     final_subtitle = self.call_karaoke_converter(
                         calibrated_subtitle, calibration_audio, karaoke_subtitle_path, karaoke_effect=True
                     )
+                final_subtitles.append({
+                    'language': subtitle_language,
+                    'final_subtitle': final_subtitle,
+                    'is_default': True,
+                    'original_track_id': '1',
+                    'effect': 'prompter'
+                })
             else:  # 标准卡拉OK效果
                 karaoke_subtitle_path = self.cache_dir / f"karaoke_{subtitle_path.stem}.ass"
                 if karaoke_subtitle_path.exists():
@@ -1090,34 +1715,43 @@ class MainProcessor:
                 final_subtitle = self.call_karaoke_converter(
                     calibrated_subtitle, calibration_audio, karaoke_subtitle_path, karaoke_effect=True
                 )
-            if not final_subtitle:
-                print("卡拉OK转换失败，使用校准后的字幕")
-                final_subtitle = calibrated_subtitle
+                final_subtitles.append({
+                    'language': subtitle_language,
+                    'final_subtitle': final_subtitle,
+                    'is_default': True,
+                    'original_track_id': '1',
+                    'effect': 'default'
+                })
         else:
-            final_subtitle = calibrated_subtitle
+            # 不启用卡拉OK效果，只使用校准后的字幕
+            final_subtitles.append({
+                'language': subtitle_language,
+                'final_subtitle': calibrated_subtitle,
+                'is_default': True,
+                'original_track_id': '1',
+                'effect': 'none'
+            })
+        
+        # 处理MKV打包
         mkv_result = None
         if enable_packing:
             print("\n步骤5: MKV打包（保留原视频音频）")
             print("-" * 30)
-            output_mkv_path = self.process_output_video_filename(media_path, karaoke_effect)
+            output_mkv_path = self.process_output_video_filename(media_path, karaoke_effect, real_karaoke_effect, output_dir)
             if output_dir != media_path.parent:
                 output_mkv_path = output_dir / output_mkv_path.name
-            subtitle_track = {
-                'language': subtitle_language,
-                'final_subtitle': final_subtitle,
-                'is_default': True,
-                'original_track_id': '1'
-            }
+            
+            # 调用字幕替换打包器，传递所有生成的字幕轨道
             mkv_result = self.call_mkv_packer_subtitles_only(
                 video_path=media_path,
-                subtitle_tracks=[subtitle_track],
+                subtitle_tracks=final_subtitles,
                 output_path=output_mkv_path,
                 enable_custom_font=enable_custom_font
             )
         result = {
             'input_media': media_path,
             'input_subtitle': subtitle_path,
-            'final_subtitle': final_subtitle,
+            'final_subtitles': final_subtitles,
             'output_mkv': mkv_result,
             'output_dir': output_dir,
             'language': subtitle_language
@@ -1128,7 +1762,10 @@ class MainProcessor:
         if mkv_result:
             print(f"输出视频: {mkv_result}")
         else:
-            print(f"处理后的字幕: {final_subtitle}")
+            if final_subtitles:
+                print(f"处理后的字幕轨道数量: {len(final_subtitles)}")
+                for i, track in enumerate(final_subtitles):
+                    print(f"  轨道{i+1}: {track['final_subtitle']}")
         return result
 
     def process_real_karaoke(self, subtitle_path, audio_path=None, output_path=None):
@@ -1157,7 +1794,23 @@ class MainProcessor:
             print(f"k.py处理完成: {Path(k_result).name}")
             final_output_path = output_path
             if output_path is None:
-                final_output_path = Path(subtitle_path).parent / f"{Path(subtitle_path).stem}_real_karaoke.ass"
+                # 使用新的命名规则：KTV效果使用(ASS_1)标记
+                stem = Path(subtitle_path).stem
+                # 原文件带(ASS) 标签 将(ASS) 改成(ASS_1)
+                if ' (ASS)' in stem:
+                    new_stem = stem.replace(' (ASS)', ' (ASS_1)')
+                else:
+                    new_stem = stem + ' (ASS_1)'
+                final_output_path = Path(subtitle_path).parent / f"{new_stem}.ass"
+                # 与原文件重名则在后面 添加（1）序列号（）
+                if final_output_path.exists():
+                    counter = 1
+                    while True:
+                        counter += 1
+                        new_path = Path(subtitle_path).parent / f"{new_stem} ({counter}).ass"
+                        if not new_path.exists():
+                            final_output_path = new_path
+                            break
             import shutil
             shutil.copy2(k_result, final_output_path)
             print(f"\n真实卡拉OK处理完成!")
@@ -1218,7 +1871,23 @@ class MainProcessor:
                 
                 final_output_path = output_path
                 if output_path is None:
-                    final_output_path = Path(subtitle_path).parent / f"{Path(subtitle_path).stem}_prompter.ass"
+                    # 使用新的命名规则：提词器效果使用(ASS_1)标记
+                    stem = Path(subtitle_path).stem
+                    # 原文件带(ASS) 标签 将(ASS) 改成(ASS_1)
+                    if ' (ASS)' in stem:
+                        new_stem = stem.replace(' (ASS)', ' (ASS_1)')
+                    else:
+                        new_stem = stem + ' (ASS_1)'
+                    final_output_path = Path(subtitle_path).parent / f"{new_stem}.ass"
+                    # 与原文件重名则在后面 添加（1）序列号（）
+                    if final_output_path.exists():
+                        counter = 1
+                        while True:
+                            counter += 1
+                            new_path = Path(subtitle_path).parent / f"{new_stem} ({counter}).ass"
+                            if not new_path.exists():
+                                final_output_path = new_path
+                                break
                 
                 import shutil
                 shutil.copy2(t_output_path, final_output_path)
@@ -1254,7 +1923,8 @@ class MainProcessor:
     def call_karaoke_converter(self, subtitle_path, audio_path=None, output_path=None, karaoke_effect=True):
         cmd = [
             str(self.python_path), str(self.karaoke_converter_path),
-            '--input', str(subtitle_path)
+            '--input', str(subtitle_path),
+            '--dialogue', '1'  # 启用对白字幕检测
         ]
         if audio_path and Path(audio_path).exists():
             cmd.extend(['--audio', str(audio_path)])
@@ -1291,28 +1961,61 @@ class MainProcessor:
         if not k_path.exists():
             print("k.py文件未找到")
             return None
-        cmd = [str(self.python_path), str(k_path), str(subtitle_path)]
+        
+        # 如果没有指定输出路径，生成一个临时路径
+        if output_path is None:
+            output_path = Path(subtitle_path).parent / f"{Path(subtitle_path).stem}_k_processed.ass"
+        
+        # 使用-o参数指定输出路径，避免依赖固定的输出文件名格式
+        cmd = [
+            str(self.python_path), 
+            str(k_path), 
+            str(subtitle_path),
+            "-o", str(output_path),
+            "-ow"  # 自动覆盖已存在的文件
+        ]
+        
         try:
             print("调用k.py进行双语卡拉OK处理...")
+            print(f"指定输出路径: {output_path}")
             returncode, stdout, stderr = self.run_command_safe(cmd, timeout=180)
+            
             if returncode == 0:
                 print("k.py处理完成")
-                default_output = Path(subtitle_path).parent / f"{Path(subtitle_path).stem}_final.ass"
-                if default_output.exists():
-                    if output_path and output_path != default_output:
-                        import shutil
-                        shutil.copy2(default_output, output_path)
-                        return output_path
-                    else:
-                        return default_output
+                
+                # 显示k.py的输出
+                if stdout:
+                    print(f"k.py输出: {stdout[:500]}")
+                
+                # 检查指定的输出文件是否存在
+                if output_path.exists():
+                    print(f"找到卡拉OK效果输出文件: {output_path}")
+                    return output_path
                 else:
-                    potential_files = list(Path(subtitle_path).parent.glob(f"{Path(subtitle_path).stem}*final*.ass"))
-                    if potential_files:
-                        if output_path:
-                            shutil.copy2(potential_files[0], output_path)
-                            return output_path
-                        else:
-                            return potential_files[0]
+                    # 如果指定的输出文件不存在，尝试查找其他可能的输出
+                    print(f"指定的输出文件不存在，搜索其他可能的输出...")
+                    
+                    # 显示k.py的完整输出，以便调试
+                    if stdout:
+                        print(f"k.py完整输出: {stdout}")
+                    if stderr:
+                        print(f"k.py错误输出: {stderr}")
+                    
+                    # 尝试查找所有.ass文件
+                    all_ass_files = list(Path(subtitle_path).parent.glob("*.ass"))
+                    print(f"当前目录中的ASS文件: {[str(f) for f in all_ass_files]}")
+                    
+                    if len(all_ass_files) > 1:
+                        # 排除原始文件，使用最新创建的文件
+                        original_file = Path(subtitle_path)
+                        latest_file = max(all_ass_files, key=lambda x: x.stat().st_mtime)
+                        if latest_file != original_file:
+                            print(f"使用最新创建的文件: {latest_file}")
+                            return latest_file
+                    
+                    # 如果还是找不到，返回None表示失败
+                    print("未找到k.py生成的输出文件")
+                    return None
             else:
                 print(f"k.py处理失败: {stderr}")
                 return None
@@ -1334,7 +2037,13 @@ class MainProcessor:
         for i, track in enumerate(subtitle_tracks_sorted):
             lang_name = self.get_language_name(track.get('language', 'und'))
             status = "默认" if track.get('is_default') else "非默认"
-            print(f"  轨道{track.get('original_track_id')}: {lang_name} - {status}")
+            effect = track.get('effect', 'default')
+            # 默认字幕不显示效果名称，只显示语言信息
+            effect_name = "" if effect == 'default' else "KTV效果" if effect == 'ktv' else "提词器效果" if effect == 'prompter' else ""
+            if effect_name:
+                print(f"  轨道{track.get('original_track_id')}: {lang_name} - {status} - {effect_name}")
+            else:
+                print(f"  轨道{track.get('original_track_id')}: {lang_name} - {status}")
         for track in subtitle_tracks_sorted:
             if track.get('final_subtitle') and Path(track['final_subtitle']).exists():
                 cmd.extend(['-s', str(track['final_subtitle'])])
@@ -1345,6 +2054,17 @@ class MainProcessor:
                     cmd.extend(['--default-subtitle', 'yes'])
                 else:
                     cmd.extend(['--default-subtitle', 'no'])
+                # 添加轨道名称：默认字幕不添加效果名称，只保留语言信息
+                effect = track.get('effect', 'default')
+                if effect == 'default':
+                    track_name = ''  # 默认字幕不添加任何效果名称
+                elif effect == 'ktv':
+                    track_name = 'KTV效果'
+                elif effect == 'prompter':
+                    track_name = '提词器效果'
+                else:
+                    track_name = ''
+                cmd.extend(['--track-name', track_name])
         if not enable_custom_font:
             cmd.append('--no-custom-font')
         if output_path:
@@ -1381,11 +2101,14 @@ class MainProcessor:
                 return potential_file
         return None
 
-    def call_subtitle_calibrator(self, audio_path, subtitle_path, output_path=None):
+    def call_subtitle_calibrator(self, audio_path, subtitle_path, output_path=None, remove_karaoke=False):
         cmd = [
             str(self.python_path), str(self.subtitle_calibrator_path),
             '-a', str(audio_path), '-s', str(subtitle_path)
         ]
+        # 添加移除卡拉OK标签的参数
+        if remove_karaoke:
+            cmd.extend(['--remove-karaoke'])
         if output_path:
             cmd.extend(['-o', str(output_path)])
         try:
@@ -1410,7 +2133,7 @@ class MainProcessor:
 
     def check_mkvtoolnix_available(self):
         try:
-            returncode, stdout, stderr = self.run_command_safe(['mkvmerge', '--version'])
+            returncode, stdout, stderr = self.run_command_safe([self.mkvmerge_path, '--version'])
             return returncode == 0
         except:
             return False
@@ -1466,7 +2189,13 @@ class MainProcessor:
                 if self.cache_dir and self.cache_dir.exists():
                     self.cleanup_cache()
         elif input_path.is_dir():
-            default_output_dir = input_path / "ASS"
+            # 生成唯一的默认输出目录，如已存在则添加序列号
+            base_output_dir = input_path / "ASS"
+            counter = 1
+            default_output_dir = base_output_dir
+            while default_output_dir.exists():
+                default_output_dir = input_path / f"ASS ({counter})"
+                counter += 1
             validated_output_dir = self.validate_output_dir(output_dir, default_output_dir, input_path)
             video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.m4v'}
             video_files = []
@@ -1526,58 +2255,81 @@ class MainProcessor:
 
 class SimpleSubtitleConverter:
     @staticmethod
-    def generate_incremental_filename(input_path, marker, extension):
+    def generate_incremental_filename(input_path, marker, extension, output_dir=None):
         input_path = Path(input_path)
         base_stem = input_path.stem
         clean_stem = re.sub(rf'{re.escape(marker)}\s*(\(\d+\))?\s*$', '', base_stem).strip()
         clean_stem = re.sub(r'\s+\(\d+\)\s*$', '', clean_stem).strip()
         counter = 1
+        # 确定检查目录
+        check_dir = Path(output_dir) if output_dir else input_path.parent
         while True:
             if counter == 1:
                 new_filename = f"{clean_stem}{marker}{extension}"
             else:
                 new_filename = f"{clean_stem}{marker} ({counter}){extension}"
-            new_path = input_path.parent / new_filename
+            new_path = check_dir / new_filename
             if not new_path.exists():
                 return new_path
             counter += 1
     
-    def process_output_filename(self, input_path, karaoke_mode=False, is_batch=False):
+    def process_output_filename(self, input_path, karaoke_mode=False, is_batch=False, real_karaoke_effect=0, output_dir=None):
         input_path = Path(input_path)
         stem = input_path.stem
-        if karaoke_mode:
-            target_marker = KARAOKE_SUFFIX
-            if target_marker in stem:
-                return self.generate_incremental_filename(input_path, target_marker, '.ass')
-            new_stem = stem
-            for replace_marker in OUTPUT_REPLACE_MARKERS:
-                if replace_marker in new_stem:
-                    new_stem = new_stem.replace(replace_marker, target_marker)
-                    break
-            if new_stem == stem:
-                new_stem = f"{stem}{target_marker}"
+        
+        # 根据real_karaoke_effect确定目标标记
+        if real_karaoke_effect == 'A':  # 全选模式
+            # 全选模式：使用 (ASS) 标记
+            target_marker = ' (ASS)'
+            # 原文件带(ASS) 标签 将(ASS) 改成(ASS)
+            if ' (ASS)' in stem:
+                new_stem = stem.replace(' (ASS)', target_marker)
+            else:
+                new_stem = stem + target_marker
+        elif real_karaoke_effect == 1 or real_karaoke_effect == 2 or str(real_karaoke_effect) in ['1', '2']:  # KTV效果或提词器效果
+            # 非默认效果：使用 (ASS_1) 标记
+            target_marker = ' (ASS_1)'
+            # 原文件带(ASS) 标签 将(ASS) 改成(ASS_1)
+            if ' (ASS)' in stem:
+                new_stem = stem.replace(' (ASS)', target_marker)
+            else:
+                new_stem = stem + target_marker
+        else:  # 默认效果
+            if karaoke_mode:
+                target_marker = KARAOKE_SUFFIX
+            else:
+                target_marker = NO_KARAOKE_SUFFIX
+            # 如果是默认效果源文件带(ASS) 则无需添加(ASS)
+            if ' (ASS)' in stem and karaoke_mode:
+                new_stem = stem
+            else:
+                new_stem = stem
+                for replace_marker in OUTPUT_REPLACE_MARKERS:
+                    if replace_marker in new_stem:
+                        new_stem = new_stem.replace(replace_marker, target_marker)
+                        break
+                if new_stem == stem and karaoke_mode:
+                    new_stem = f"{stem}{target_marker}"
+        
+        # 确定输出目录
+        if output_dir:
+            output_dir = Path(output_dir)
+            output_path = output_dir / f"{new_stem}.ass"
         else:
-            target_marker = NO_KARAOKE_SUFFIX
-            if target_marker in stem:
-                return self.generate_incremental_filename(input_path, target_marker, '.ass')
-            new_stem = stem
-            for replace_marker in OUTPUT_REPLACE_MARKERS:
-                if replace_marker in new_stem:
-                    new_stem = new_stem.replace(replace_marker, target_marker)
-                    break
-            if new_stem == stem:
-                new_stem = f"{stem}{target_marker}"
-        output_path = input_path.parent / f"{new_stem}.ass"
+            output_dir = input_path.parent
+            output_path = output_dir / f"{new_stem}.ass"
+        
+        # 与原文件重名则在后面 添加（1）序列号（）
         if output_path.exists():
-            return self.generate_incremental_filename(input_path, target_marker, '.ass')
+            return self.generate_incremental_filename(input_path, target_marker, '.ass', output_dir)
         return output_path
     
-    def convert_subtitle(self, input_path, output_path=None, enable_custom_font=True, karaoke_mode=False, is_batch=False):
+    def convert_subtitle(self, input_path, output_path=None, enable_custom_font=True, karaoke_mode=False, is_batch=False, real_karaoke_effect=0):
         try:
             from pathlib import Path
             input_path = Path(input_path)
             if output_path is None:
-                output_path = self.process_output_filename(input_path, karaoke_mode, is_batch)
+                output_path = self.process_output_filename(input_path, karaoke_mode, is_batch, real_karaoke_effect)
             import shutil
             shutil.copy2(input_path, output_path)
             print(f"字幕文件已转换: {output_path}")
@@ -1588,19 +2340,43 @@ class SimpleSubtitleConverter:
 
 def main():
     try:
+        import argparse
+        parser = argparse.ArgumentParser(description='字幕打包程序')
+        parser.add_argument('--subtitle-mode', type=str, choices=['0', '1', '2', 'A', '-1'], help='设置字幕处理模式：0-默认，1-KTV效果，2-提词器效果，A/-1-全部效果')
+        parser.add_argument('input_paths', nargs='*', help='输入文件路径')
+        args = parser.parse_known_args()
+        
+        # 分离已知参数和未知参数
+        known_args, unknown_args = args
+        input_paths = known_args.input_paths + unknown_args
+        
         processor = MainProcessor()
-        print("=" * 60)
-        print("字幕处理工作流程：字幕校准 -> 卡拉OK生成 -> MKV打包")
-        print("=" * 60)
-        if len(sys.argv) > 1:
-            for i, arg in enumerate(sys.argv[1:], 1):
-                print(f"\n处理参数 {i}/{len(sys.argv)-1}: {arg}")
+        workflow_text = "字幕处理工作流程：字幕校准 -> 卡拉OK生成 -> MKV打包"
+        print("=" * len(workflow_text))
+        print(workflow_text)
+        print("=" * len(workflow_text))
+        if input_paths:
+            for i, arg in enumerate(input_paths, 1):
+                print(f"\n处理参数 {i}/{len(input_paths)}: {arg}")
                 input_path = Path(arg)
                 if not input_path.exists():
                     print(f"警告: 路径不存在: {arg}")
                     continue
                 karaoke_effect = KARAOKE_EFFECT == 1
-                real_karaoke_effect = REAL_KARAOKE_EFFECT if karaoke_effect else 0
+                
+                # 处理subtitle-mode参数
+                if known_args.subtitle_mode is not None:
+                    if known_args.subtitle_mode in ['A', '-1']:
+                        real_karaoke_effect = 'A'  # 使用'A'作为内部全选标记
+                    else:
+                        real_karaoke_effect = int(known_args.subtitle_mode)
+                else:
+                    # 如果是内部值-1，转换为'A'作为内部全选标记
+                    if REAL_KARAOKE_EFFECT == -1:
+                        real_karaoke_effect = 'A'
+                    else:
+                        real_karaoke_effect = REAL_KARAOKE_EFFECT if karaoke_effect else 0
+                    
                 enable_custom_font = CUSTOM_FONT == 1
                 use_vocal_separation = USE_VOCAL_SEPARATION
                 enable_packing = ENABLE_PACKING
@@ -1675,9 +2451,11 @@ def main():
                 real_karaoke_effect = REAL_KARAOKE_EFFECT if karaoke_effect else 0
                 if karaoke_effect:
                     if real_karaoke_effect == 1:
-                        print(f"真实卡拉OK效果: 启用（真实卡拉OK式样）（可在配置中修改REAL_KARAOKE_EFFECT=1）")
+                        print(f"真实卡拉OK效果: 启用（真实卡拉OK式样）（可在配置中修改REAL_KARAOKE_EFFECT）")
                     elif real_karaoke_effect == 2:
-                        print(f"真实卡拉OK效果: 启用（提词器式样）（可在配置中修改REAL_KARAOKE_EFFECT=2）")
+                        print(f"真实卡拉OK效果: 启用（提词器式样）（可在配置中修改REAL_KARAOKE_EFFECT）")
+                    elif real_karaoke_effect == -1:
+                        print(f"真实卡拉OK效果: 启用（全选模式）（可在配置中修改REAL_KARAOKE_EFFECT）")
                     else:
                         print(f"真实卡拉OK效果: 禁用（默认式样）（可在配置中修改REAL_KARAOKE_EFFECT）")
                 enable_custom_font = CUSTOM_FONT == 1

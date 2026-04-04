@@ -9,7 +9,7 @@ import random
 # ====================== 字体大小配置 ======================
 FONT_SIZE_KARAOKE = 70     # 卡拉OK主文字大小
 FONT_SIZE_CHINESE = 50     # 中文文字大小
-FONT_SIZE_COUNTDOWN = 80   # 倒计时文字大小
+FONT_SIZE_COUNTDOWN = 50   # 倒计时文字大小
 
 # ====================== 卡拉OK颜色配置 ======================
 KARAOKE_PRIMARY = "&H20FF80FF"     # 主颜色
@@ -410,7 +410,7 @@ def create_glitch_effect(start_time, end_time, style, text, line_index, next_lin
     
     return glitch_lines
 
-def create_bilingual_ass(input_file, auto_overwrite=False):
+def create_bilingual_ass(input_file, auto_overwrite=False, output_path=None):
     """创建优化的双语ASS文件"""
     input_file = input_file.strip().strip('"\'')
     
@@ -449,17 +449,21 @@ def create_bilingual_ass(input_file, auto_overwrite=False):
     
     events_content = content[events_start:]
     
-    base_name = os.path.splitext(input_file)[0]
-    output_file = base_name + "_final.ass"
+    # 如果指定了输出路径，直接使用，否则使用默认命名规则
+    if output_path:
+        output_file = output_path
+    else:
+        base_name = os.path.splitext(input_file)[0]
+        output_file = base_name + "_KTV效果.ass"
     
     if os.path.exists(output_file):
         if auto_overwrite:
             print(f"[INFO] 覆盖已存在的文件: {output_file}")
         else:
             counter = 1
-            while os.path.exists(f"{base_name}_final_{counter}.ass"):
+            while os.path.exists(f"{base_name}_KTV效果_{counter}.ass"):
                 counter += 1
-            output_file = f"{base_name}_final_{counter}.ass"
+            output_file = f"{base_name}_KTV效果_{counter}.ass"
             print(f"[INFO] 文件已存在，自动重命名为: {output_file}")
     
     # 构建样式字符串
@@ -467,6 +471,19 @@ def create_bilingual_ass(input_file, auto_overwrite=False):
     
     # 定义所有样式
     style_definitions = [
+        # Default样式
+        {
+            'name': 'Default',
+            'fontsize': 50,
+            'colors': ('&H00FFFFFF', '&H00000000', '&H00804000', '&H00000000'),
+            'bold': -1,
+            'scale_y': 100,
+            'outline': 2,
+            'alignment': 2,
+            'margin_l': 5,
+            'margin_r': 5,
+            'margin_v': 2
+        },
         # K1样式
         {
             'name': 'K1',
@@ -617,11 +634,8 @@ def create_bilingual_ass(input_file, auto_overwrite=False):
     
     # 生成样式字符串
     for style_def in style_definitions:
-        # 为Countdown样式固定使用Arial字体，其他样式使用提取的字体
-        if style_def['name'] == 'Countdown':
-            font = 'Arial'  # 固定为Arial
-        else:
-            font = font_name  # 使用提取的字体或默认字体
+        # 所有样式统一使用提取的字体
+        font = font_name  # 使用提取的字体或默认字体
         
         style_line = f"Style: {style_def['name']},{font},{style_def['fontsize']},{style_def['colors'][0]},{style_def['colors'][1]},{style_def['colors'][2]},{style_def['colors'][3]},{style_def['bold']},{ITALIC},{UNDERLINE},{STRIKEOUT},{SCALE_X},{style_def['scale_y']},{SPACING},{ANGLE},{BORDER_STYLE},{style_def['outline']},{SHADOW_DEPTH},{style_def['alignment']},{style_def['margin_l']},{style_def['margin_r']},{style_def['margin_v']},{ENCODING}"
         styles_lines.append(style_line)
@@ -629,7 +643,7 @@ def create_bilingual_ass(input_file, auto_overwrite=False):
     styles = "\n".join(styles_lines)
     
     ass_template = f"""[Script Info]
-Title: KaraOK Bilingual
+Title: KTV效果
 ScriptType: v4.00+
 WrapStyle: 0
 ScaledBorderAndShadow: yes
@@ -643,11 +657,25 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
     
     lines = events_content.split('\n')
     dialogues = []
+    default_lines = []
     
     for line in lines:
         line = line.strip()
         if line.startswith('Dialogue:'):
-            dialogues.append(line)
+            # 检查样式和内容
+            parts = line.split(',', 9)
+            if len(parts) >= 10:
+                style = parts[3].strip()
+                text = parts[9].strip()
+                
+                # 检查文本是否包含K值特效
+                has_k_effect = bool(re.search(r'\\[Kk][0-9df]*', text))
+                
+                # 如果不包含K值特效，添加到默认行
+                if not has_k_effect:
+                    default_lines.append(line)
+                else:
+                    dialogues.append(line)
     
     print(f"找到 {len(dialogues)} 个对话行")
     
@@ -866,6 +894,9 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
         
         current_style = 'K2' if current_style == 'K1' else 'K1'
     
+    # 将默认样式的字幕行添加到处理后的行中
+    processed_lines.extend(default_lines)
+    
     events_lines = ["[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]
     events_lines.extend(processed_lines)
     
@@ -895,7 +926,7 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
         print(f"输入文件: {input_file}")
         print(f"输出文件: {output_file}")
         print(f"输出路径: {os.path.abspath(output_file)}")
-        print(f"使用字体: {font_name} (倒计时固定使用Arial)")
+        print(f"使用字体: {font_name}")
         print(f"中文显示模式: {CHINESE_DISPLAY_MODE} ({'当前效果(每组上方)' if CHINESE_DISPLAY_MODE == 0 else '新增效果(在屏幕单独显示)'})")
         if CHINESE_DISPLAY_MODE == 1:
             position_names = {1: "顶部", 2: "中部", 3: "底部"}
@@ -1015,6 +1046,158 @@ def parse_drag_paths(user_input):
     
     return file_paths
 
+def restore_original_ass(input_file, auto_overwrite=False, output_path=None):
+    """将K.py转换后的ASS文件还原为原始格式"""
+    input_file = input_file.strip().strip('"\'')
+    
+    if not os.path.exists(input_file):
+        print(f"错误: 找不到文件 '{input_file}'")
+        return False, None
+    
+    print(f"[OK] 找到文件: {input_file}")
+    
+    try:
+        with open(input_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except:
+        try:
+            with open(input_file, 'r', encoding='utf-8-sig') as f:
+                content = f.read()
+        except:
+            try:
+                with open(input_file, 'r', encoding='gbk') as f:
+                    content = f.read()
+            except Exception as e:
+                print(f"[ERROR] 读取文件失败: {e}")
+                return False, None
+    
+    # 提取原始字体信息
+    font_name = extract_font_from_ass(content)
+    if not font_name:
+        font_name = "Microsoft YaHei"
+        print(f"[WARN] 未找到字体，使用默认字体: {font_name}")
+    else:
+        print(f"[OK] 从输入文件提取字体: {font_name}")
+    
+    # 提取原始的Events部分
+    events_match = re.search(r'\[Events\](.*?)$', content, re.S)
+    if not events_match:
+        print("[ERROR] 未找到Events部分")
+        return False, None
+    
+    events_content = events_match.group(1)
+    lines = events_content.split('\n')
+    dialogues = []
+    
+    for line in lines:
+        line = line.strip()
+        if line.startswith('Dialogue:'):
+            parts = line.split(',', 9)
+            if len(parts) >= 10:
+                start_time = parts[1].strip()
+                end_time = parts[2].strip()
+                style = parts[3].strip()
+                text = parts[9].strip()
+                
+                # 保留指定样式的行，同时也保留Default样式
+                if style in ['K1', 'k1_Chinese_K', 'k1_Chinese', 'K2', 'k2_Chinese_K', 'k2_Chinese', 'Default']:
+                    if style.lower() == 'default':
+                        # 对于Default样式，直接保留原始文本，不做处理
+                        processed_text = text
+                        # 清理文本，删除特效标签和转义序列
+                        processed_text = re.sub(r'\{[^}]*\}', '', processed_text)
+                        processed_text = re.sub(r'\\\w*', '', processed_text)
+                        processed_text = re.sub(r'\s+', ' ', processed_text).strip()
+                        if processed_text:
+                            dialogues.append((start_time, end_time, style, processed_text, 'Default'))
+                    else:
+                        # 对于非Default样式，处理K值标签
+                        # 检测K值，只保留K值和文本，去掉其他特效标签
+                        # 查找第一个K值的位置，确保包含完整的标签格式{\K187}
+                        k_match = re.search(r'\{\\[Kk][0-9df]*', text)
+                        if k_match:
+                            # 提取K值和后面的文本，确保包含左大括号
+                            k_start = k_match.start()
+                            processed_text = text[k_start:].strip()
+                        else:
+                            # 检查是否有不带左大括号的K值
+                            k_match = re.search(r'\\[Kk][0-9df]*', text)
+                            if k_match:
+                                # 添加左大括号
+                                k_start = k_match.start()
+                                processed_text = '{' + text[k_start:].strip()
+                            else:
+                                # 没有K值，直接使用文本
+                                processed_text = text.strip()
+                        
+                        if processed_text:
+                            dialogues.append((start_time, end_time, style, processed_text, 'Karaoke'))
+    
+    # 按时间排序
+    dialogues.sort(key=lambda x: (time_str_to_seconds(x[0]), x[0], x[1]))
+    
+    # 生成原始格式的对话行，按顺序排列
+    original_dialogues = []
+    for dialogue in dialogues:
+        start_time, end_time, style, text, target_style = dialogue
+        # 根据目标样式应用相应的样式
+        original_dialogues.append(f"Dialogue: 0,{start_time},{end_time},{target_style},,0000,0000,0000,,{text}")
+    
+    # 生成输出文件名
+    if output_path:
+        output_file = output_path
+    else:
+        base_name = os.path.splitext(input_file)[0]
+        output_file = base_name + "_还原.ass"
+    
+    if os.path.exists(output_file):
+        if auto_overwrite:
+            print(f"[INFO] 覆盖已存在的文件: {output_file}")
+        else:
+            counter = 1
+            while os.path.exists(f"{base_name}_还原_{counter}.ass"):
+                counter += 1
+            output_file = f"{base_name}_还原_{counter}.ass"
+            print(f"[INFO] 文件已存在，自动重命名为: {output_file}")
+    
+    # 生成原始格式的ASS内容
+    original_content = f"""[Script Info]
+Title:
+ScriptType: v4.00+
+Collisions: Normal
+PlayResX: 1920
+PlayResY: 1080
+Timer: 100.0000
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,方正准圆简体,40,&H00FFFFFF,&H00000000,&H00804000,&H00000000,-1,0,0,0,100,100,0,0,1,2,1,2,5,5,2,134
+Style: Karaoke,{font_name},40,&H00FF80FF,&H00FFFFFF,&H00804000,&H00000000,-1,0,0,0,100,100,0,0,1,2,1,2,5,5,2,134
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+{chr(10).join(original_dialogues)}
+"""
+    
+    try:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(original_content)
+        
+        print(f"\n[OK] ASS文件还原成功!")
+        print(f"输入文件: {input_file}")
+        print(f"输出文件: {output_file}")
+        print(f"输出路径: {os.path.abspath(output_file)}")
+        print(f"使用字体: {font_name}")
+        print(f"还原对话行数: {len(original_dialogues)}")
+        
+        return True, output_file
+        
+    except Exception as e:
+        print(f"[ERROR] 写入文件失败: {e}")
+        return False, None
+
 def simple_interactive_mode(auto_overwrite=False):
     print("=" * 80)
     print("ASS卡拉OK字幕处理工具")
@@ -1054,12 +1237,13 @@ def simple_interactive_mode(auto_overwrite=False):
         print(f"故障特效重叠时间: {GLITCH_OVERLAP_TIME}秒")
         print(f"故障特效持续时间: {GLITCH_DURATION}秒")
     print("直接拖拽ASS文件到此处，或输入文件路径(支持多个文件)")
+    print("输入 'restore <文件路径>' 可将转换后的文件还原为原始格式")
     print("=" * 80)
     
     while True:
         try:
             print("\n" + "-" * 60)
-            user_input = input("\n拖拽ASS文件到此处或输入路径 (按回车继续处理，输入q退出): ").strip()
+            user_input = input("\n拖拽ASS文件到此处或输入路径 (按回车继续处理，输入q退出，输入restore <文件路径>还原): ").strip()
             
             if user_input.lower() in ['q', 'quit', 'exit']:
                 print("程序退出。")
@@ -1176,10 +1360,12 @@ def simple_interactive_mode(auto_overwrite=False):
 def main():
     parser = argparse.ArgumentParser(description='ASS卡拉OK字幕处理工具 (简单拖拽版)')
     parser.add_argument('files', nargs='*', help='要处理的ASS文件路径')
-    parser.add_argument('-o', '--overwrite', action='store_true', help='自动覆盖已存在的输出文件')
+    parser.add_argument('-o', '--output', help='指定输出文件路径')
+    parser.add_argument('-ow', '--overwrite', action='store_true', help='自动覆盖已存在的输出文件')
     parser.add_argument('-q', '--quiet', action='store_true', help='安静模式，减少输出')
     parser.add_argument('-v', '--version', action='store_true', help='显示版本信息')
     parser.add_argument('-s', '--simple', action='store_true', help='启动简单交互模式(拖拽模式)')
+    parser.add_argument('-r', '--restore', action='store_true', help='还原模式，将转换后的文件还原为原始格式')
     
     args = parser.parse_args()
     
@@ -1197,7 +1383,13 @@ def main():
     if args.files:
         success_count = 0
         for input_file in args.files:
-            success, _ = create_bilingual_ass(input_file, args.overwrite)
+            # 自动判断还原模式：如果文件名包含KTV效果，则自动使用还原模式
+            auto_restore = args.restore or 'KTV效果' in os.path.basename(input_file)
+            
+            if auto_restore:
+                success, _ = restore_original_ass(input_file, args.overwrite, args.output)
+            else:
+                success, _ = create_bilingual_ass(input_file, args.overwrite, args.output)
             if success:
                 success_count += 1
         

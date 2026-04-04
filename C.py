@@ -10,25 +10,22 @@ import chardet
 # ====== 字体配置 ======
 # 这里可以方便地修改字体配置
 FONT_CONFIG = {
-    # 简体中文字体配置
-    'simplified_chinese': {
-        'font_name': '方正准圆简体',      # ASS文件中使用的字体名称
-        'font_file': '方正准圆简体.ttf',  # TTF字体文件名，留空则不添加字体附件
-        'default_font_name': 'Microsoft YaHei'       # 不使用自定义字体时的默认字体
+    "simplified_chinese": {
+        "font_name": "方正准圆简体",
+        "font_file": "方正准圆简体.ttf",
+        "default_font_name": "Microsoft YaHei"
     },
-    
-    # 日语和繁体中文字体配置
-    'japanese_traditional': {
-        'font_name': '夏花绚烂前程似锦',  # ASS文件中使用的字体名称
-        'font_file': '夏花绚烂前程似锦.ttf',  # TTF字体文件名，留空则不添加字体附件
-        'default_font_name': 'Microsoft YaHei'   # 不使用自定义字体时的默认字体
+    "japanese_traditional": {
+        "font_name": "夏花绚烂前程似锦",
+        "font_file": "夏花绚烂前程似锦.ttf",
+        "default_font_name": "Microsoft YaHei"
     }
 }
 
 class SubtitleConverter:
     """字幕转换器类"""
     def __init__(self):
-        self.supported_input_formats = {'.srt', '.vtt', '.lrc', '.ssa', '.ass'}
+        self.supported_input_formats = {'.srt', '.vtt', '.lrc', '.ssa', '.ass', '.txt'}
         self.fonts_dir = Path(__file__).parent / "TTF"
     
     def process_output_filename(self, input_path, karaoke_mode=False, is_batch=False):
@@ -79,12 +76,48 @@ class SubtitleConverter:
             (0xFF66, 0xFF9F),  # 半角片假名
         ]
         
-        # 检查平假名和片假名
+        # 常用日语标点（这些单独出现时不应触发日语字体）
+        japanese_punctuation = {'・', '。', '、', '！', '？', '（', '）', '「', '」', '『', '』'}
+        
+        # 统计日文字符数量
+        japanese_count = 0
+        non_punctuation_japanese_count = 0
+        total_chars = 0
+        detected_japanese_chars = []
+        
         for char in text:
+            total_chars += 1
             code_point = ord(char)
+            is_japanese = False
             for start, end in japanese_ranges:
                 if start <= code_point <= end:
-                    return True
+                    is_japanese = True
+                    break
+            
+            if is_japanese:
+                japanese_count += 1
+                detected_japanese_chars.append(f"{char} (0x{code_point:04X})")
+                # 检查是否为非标点日文字符
+                if char not in japanese_punctuation:
+                    non_punctuation_japanese_count += 1
+        
+        # 显示关键识别逻辑（无论是否满足阈值）
+        if japanese_count > 0:
+            print(f"      识别逻辑: 检测到 {japanese_count} 个日文字符，占比 {japanese_count/total_chars*100:.1f}%")
+            if detected_japanese_chars:
+                print(f"      示例日文字符: {', '.join(detected_japanese_chars[:3])}")
+            if non_punctuation_japanese_count > 0:
+                print(f"      其中非标点日文字符: {non_punctuation_japanese_count} 个")
+            else:
+                print(f"      全部为日文标点，采用简体字体")
+        
+        # 如果包含非标点日文字符，无论数量多少，都认为是日文
+        if non_punctuation_japanese_count > 0:
+            return True
+        
+        # 只有当日文字符占比超过10%时才认为是日文
+        if total_chars > 0 and japanese_count / total_chars > 0.1:
+            return True
         
         return False
     
@@ -102,16 +135,27 @@ class SubtitleConverter:
         traditional_chars = set('麼麼為為於於裡裡後後個個時體國學與麼麼')
         
         # 检查繁体特有字符
+        detected_traditional_chars = []
         for char in text:
             if char in traditional_chars:
-                return True
+                detected_traditional_chars.append(char)
+        
+        # 显示关键识别逻辑（无论是否满足阈值）
+        if detected_traditional_chars:
+            print(f"      识别逻辑: 检测到 {len(detected_traditional_chars)} 个繁体特有字符")
+            print(f"      示例繁体字符: {', '.join(detected_traditional_chars[:3])}")
+            return True
         
         # 基于字符使用频率的简单检测（可扩展更复杂的检测逻辑）
         traditional_indicators = ['麼', '為', '於', '裡', '後', '個', '體', '國', '學', '與']
         traditional_count = sum(1 for char in text if char in traditional_indicators)
         
-        # 如果繁体特征字符数量达到一定阈值，判定为繁体
-        if traditional_count >= max(1, len(text) * 0.1):  # 至少1个或10%的字符是繁体特征
+        # 显示关键识别逻辑（无论是否满足阈值）
+        if traditional_count > 0:
+            print(f"      识别逻辑: 检测到 {traditional_count} 个繁体特征字符，占比 {traditional_count/len(text)*100:.1f}%")
+        
+        # 如果包含繁体特征字符，无论数量多少，都认为是繁体中文
+        if traditional_count > 0:
             return True
         
         return False
@@ -246,16 +290,16 @@ class SubtitleConverter:
 Title:
 ScriptType: v4.00+
 Collisions: Normal
-PlayResX: 384
-PlayResY: 288
+PlayResX: 1920
+PlayResY: 1080
 Timer: 100.0000
 WrapStyle: 0
-ScaledBorderAndShadow: no
+ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Karaoke,{font_name},14,&H00FF80FF,&H00FFFFFF,&H00804000,&H00000000,-1,0,0,0,100,100,0,0,1,2,1,2,5,5,2,134
-Style: Default,{font_name},14,&H00FFFFFF,&H00000000,&H00804000,&H00000000,-1,0,0,0,100,100,0,0,1,2,1,2,5,5,2,134
+Style: Karaoke,{font_name},50,&H00FF80FF,&H00FFFFFF,&H00804000,&H00000000,-1,0,0,0,100,100,0,0,1,2,1,2,5,5,2,134
+Style: Default,{font_name},50,&H00FFFFFF,&H00000000,&H00804000,&H00000000,-1,0,0,0,100,100,0,0,1,2,1,2,5,5,2,134
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -396,6 +440,26 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         
         return vtt_time
     
+    def detect_file_content_format(self, file_path):
+        """检测文件内容格式"""
+        try:
+            encoding = self.detect_encoding(file_path)
+            with open(file_path, 'r', encoding=encoding, errors='ignore') as f:
+                content = f.read(10000)  # 读取前10000个字符进行检测
+            
+            if '[Script Info]' in content and '[Events]' in content:
+                return 'ass'
+            elif any('--> ' in line for line in content.split('\n')):
+                return 'srt'
+            elif any('WEBVTT' in line for line in content.split('\n')):
+                return 'vtt'
+            elif any(re.match(r'^\[\d{2}:\d{2}\.\d{2}\]', line) for line in content.split('\n')):
+                return 'lrc'
+            else:
+                return 'txt'
+        except Exception:
+            return 'txt'
+    
     def convert_subtitle(self, input_path, output_path=None, enable_custom_font=True, karaoke_mode=False, is_batch=False):
         """转换单个字幕文件为ASS格式"""
         input_path = Path(input_path)
@@ -439,7 +503,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 font_config = FONT_CONFIG['simplified_chinese']
                 font_used = font_config['default_font_name']
         
+        # 检测文件内容格式
+        content_format = self.detect_file_content_format(input_path)
+        file_ext = input_path.suffix.lower()
+        
         print(f"转换字幕: {input_path.name}")
+        print(f"文件扩展名: {file_ext}")
+        print(f"内容格式: {content_format}")
         print(f"检测语言: {language_name} (基于内容精确分析)")
         print(f"使用字体: {font_used}")
         print(f"输出文件: {output_path.name}")
@@ -450,16 +520,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             content = f.read()
         
         # 根据文件类型转换
-        file_ext = input_path.suffix.lower()
-        
-        if file_ext == '.ass':
+        if content_format == 'ass':
             # 已经是ASS格式，直接复制并更新样式
             ass_content = content
-        elif file_ext == '.srt':
+        elif content_format == 'srt':
             ass_events = self.srt_to_ass(content)
             ass_content = self.generate_ass_header(language_type, enable_custom_font)
             ass_content += '\n'.join(ass_events)
-        elif file_ext == '.vtt':
+        elif content_format == 'vtt':
             ass_events = self.vtt_to_ass(content)
             ass_content = self.generate_ass_header(language_type, enable_custom_font)
             ass_content += '\n'.join(ass_events)
@@ -530,11 +598,40 @@ class MKVPacker:
         self.supported_subtitle_formats = {'.ass', '.srt', '.ssa', '.vtt'}
         self.fonts_dir = Path(__file__).parent / "TTF"
         self.subtitle_converter = SubtitleConverter()
+        # 初始化工具路径
+        self.mkvmerge_path = self.detect_mkvmerge_path()
+        self.mkvextract_path = self.detect_mkvextract_path()
+    
+    def detect_mkvmerge_path(self):
+        """检测MKVToolNix路径"""
+        # 项目自带的MKVToolNix路径
+        project_mkvmerge = Path(__file__).parent / "Python" / "MKVToolNix" / "mkvmerge.exe"
+        if project_mkvmerge.exists():
+            return str(project_mkvmerge)
+        # 尝试在上级目录的Python文件夹中查找
+        python_mkvmerge = Path(__file__).parent.parent / "Python" / "MKVToolNix" / "mkvmerge.exe"
+        if python_mkvmerge.exists():
+            return str(python_mkvmerge)
+        # 系统PATH中的mkvmerge
+        return "mkvmerge"
+    
+    def detect_mkvextract_path(self):
+        """检测mkvextract路径"""
+        # 项目自带的mkvextract路径
+        project_mkvextract = Path(__file__).parent / "Python" / "MKVToolNix" / "mkvextract.exe"
+        if project_mkvextract.exists():
+            return str(project_mkvextract)
+        # 尝试在上级目录的Python文件夹中查找
+        python_mkvextract = Path(__file__).parent.parent / "Python" / "MKVToolNix" / "mkvextract.exe"
+        if python_mkvextract.exists():
+            return str(python_mkvextract)
+        # 系统PATH中的mkvextract
+        return "mkvextract"
         
     def check_mkvtoolnix_available(self):
         """检查MKVToolNix是否可用"""
         try:
-            result = subprocess.run(['mkvmerge', '--version'], 
+            result = subprocess.run([self.mkvmerge_path, '--version'], 
                                   capture_output=True, text=True, check=True)
             return True
         except (subprocess.CalledProcessError, FileNotFoundError):
@@ -759,7 +856,7 @@ class MKVPacker:
         if font_files:
             print(f"  总计添加 {len(font_files)} 个字体文件")
         else:
-            print(f"  提示: 无字体文件添加，仅替换ASS中的字体名称")
+            print(f"  提示: 无字体文件添加，仅替换ASS字体名称")
         
         return processed_tracks, list(font_files)
     
@@ -807,7 +904,7 @@ class MKVPacker:
         processed_tracks, font_files = self.process_subtitle_fonts(subtitle_tracks, enable_custom_font)
         
         # 构建mkvmerge命令
-        cmd = ['mkvmerge', '-o', str(output_path)]
+        cmd = [self.mkvmerge_path, '-o', str(output_path)]
         
         # 添加视频轨道（保留原音频，移除原字幕和字体）
         cmd.extend(['--no-subtitles', '--no-attachments', str(video_path)])
@@ -823,8 +920,9 @@ class MKVPacker:
             language = track.get('language', 'und')
             is_default = track.get('is_default', False)
             original_id = track.get('original_track_id', '未知')
+            track_name = track.get('track_name', f'{language}字幕')
             status = "默认" if is_default else "非默认"
-            print(f"  轨道{original_id}: {language} - {status}")
+            print(f"  轨道{original_id}: {language} - {status} - 名称: {track_name}")
         
         # 添加所有字幕轨道，完全保持原始默认状态
         for track in subtitle_tracks_sorted:
@@ -832,18 +930,19 @@ class MKVPacker:
             language = track.get('language', 'und')
             is_default = track.get('is_default', False)
             original_id = track.get('original_track_id', '未知')
+            track_name = track.get('track_name', f'{language}字幕')
             
             # 添加轨道参数
             cmd.extend(['--language', f'0:{language}'])
-            cmd.extend(['--track-name', f'0:{language}字幕'])
+            cmd.extend(['--track-name', f'0:{track_name}'])
             
             # 完全保持原始默认状态
             if is_default:
                 cmd.extend(['--default-track', '0:yes'])
-                print(f"添加字幕轨道 {original_id}: 语言={language}, 默认=是")
+                print(f"添加字幕轨道 {original_id}: 语言={language}, 默认=是, 名称={track_name}")
             else:
                 cmd.extend(['--default-track', '0:no'])
-                print(f"添加字幕轨道 {original_id}: 语言={language}, 默认=否")
+                print(f"添加字幕轨道 {original_id}: 语言={language}, 默认=否, 名称={track_name}")
             
             cmd.append(str(subtitle_path))
         
@@ -902,7 +1001,7 @@ class MKVPacker:
         """验证输出文件的轨道设置是否正确"""
         try:
             print("\n验证输出文件的轨道设置...")
-            cmd = ['mkvmerge', '--identification-format', 'json', '--identify', str(output_path)]
+            cmd = [self.mkvmerge_path, '--identification-format', 'json', '--identify', str(output_path)]
             
             # 设置环境变量确保UTF-8编码
             env = os.environ.copy()
@@ -981,6 +1080,7 @@ def parse_arguments():
     pack_parser.add_argument('--subtitle-language', action='append', help='字幕语言代码（与--subtitle对应）')
     pack_parser.add_argument('--default-subtitle', action='append', help='默认字幕轨道（yes/no，与--subtitle对应）')
     pack_parser.add_argument('--original-track-id', action='append', help='原始轨道ID（与--subtitle对应）')
+    pack_parser.add_argument('--track-name', action='append', help='字幕轨道名称（与--subtitle对应）')
     pack_parser.add_argument('--no-custom-font', action='store_true', help='禁用自定义字体')
     pack_parser.add_argument('--karaoke-mode', action='store_true', help='启用卡拉OK文件名模式')
     pack_parser.add_argument('-o', '--output', help='输出文件路径')
@@ -1027,6 +1127,12 @@ def command_line_main():
                         track['is_default'] = (args.default_subtitle[i].lower() == 'yes')
                     else:
                         track['is_default'] = False
+                    
+                    # 设置轨道名称：如果轨道名称为空，不添加默认名称，只保留语言信息
+                    if args.track_name and i < len(args.track_name):
+                        track['track_name'] = args.track_name[i]
+                    else:
+                        track['track_name'] = ""  # 默认字幕不添加任何效果名称，只保留语言信息
                     
                     subtitle_tracks.append(track)
             

@@ -94,7 +94,8 @@ class ASSPrompterConverter:
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: K1,{self.default_font},55,&H40FF80FF,&H40FFFFFF,&H00804000,&H00000000,0,0,0,0,100,100,0,0,1,3,0,1,120,30,180,1
 Style: k1_Chinese,{self.default_font},50,&H40FF80FF,&H40FFFFFF,&H00804000,&H00000000,0,0,0,0,100,100,0,0,1,3,0,1,120,30,180,1
-Style: Default,{self.default_font},30,&H80FFFFFF,&H80FFFFFF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,2,0,1,120,30,0,1
+Style: K2,{self.default_font},30,&H80FFFFFF,&H80FFFFFF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,2,0,1,120,30,0,1
+Style: Default,方正准圆简体,50,&H00FFFFFF,&H00000000,&H00804000,&H00000000,-1,0,0,0,100,100,0,0,1,2,1,2,5,5,2,134
 """
     
     def clean_text_for_history_preview(self, text):
@@ -244,6 +245,7 @@ Style: Default,{self.default_font},30,&H80FFFFFF,&H80FFFFFF,&H00000000,&H0000000
     def parse_ass_content(self, content):
         """解析ASS文件内容，按时间段分组"""
         events = []
+        default_style_events = []
         
         for line in content.split('\n'):
             line = line.strip()
@@ -256,17 +258,31 @@ Style: Default,{self.default_font},30,&H80FFFFFF,&H80FFFFFF,&H00000000,&H0000000
                 if len(parts) >= 10:
                     start = parts[1].strip()
                     end = parts[2].strip()
+                    style = parts[3].strip()
                     text = parts[9].strip()
                     
                     cleaned_text = self.clean_text(text)
                     if cleaned_text:
-                        events.append({
-                            'start': start,
-                            'end': end,
-                            'start_sec': self.time_to_seconds(start),
-                            'end_sec': self.time_to_seconds(end),
-                            'text': cleaned_text
-                        })
+                        # 检查文本是否包含K值特效
+                        has_k_effect = bool(re.search(r'\\[Kk][0-9df]*', text))
+                        
+                        if not has_k_effect:
+                            # 不包含K值特效的事件，保留默认样式，不参与提词器转换
+                            default_style_events.append({
+                                'start': start,
+                                'end': end,
+                                'style': style,
+                                'text': text
+                            })
+                        else:
+                            # 包含K值特效的事件参与提词器转换
+                            events.append({
+                                'start': start,
+                                'end': end,
+                                'start_sec': self.time_to_seconds(start),
+                                'end_sec': self.time_to_seconds(end),
+                                'text': cleaned_text
+                            })
         
         # 按开始时间排序
         events.sort(key=lambda x: x['start_sec'])
@@ -300,8 +316,10 @@ Style: Default,{self.default_font},30,&H80FFFFFF,&H80FFFFFF,&H00000000,&H0000000
         
         if self.verbose:
             self.log(f"找到 {len(grouped_events)} 个时间段", "VERBOSE")
+            if default_style_events:
+                self.log(f"找到 {len(default_style_events)} 个默认样式事件", "VERBOSE")
         
-        return grouped_events
+        return grouped_events, default_style_events
     
     def calculate_time_gap(self, prev_end, curr_start):
         """计算时间间隔"""
@@ -349,14 +367,14 @@ Style: Default,{self.default_font},30,&H80FFFFFF,&H80FFFFFF,&H00000000,&H0000000
     def get_style_for_row(self, row_index, is_bilingual_line=False):
         """获取样式名"""
         if row_index == 0:
-            return 'Default'
+            return 'K2'
         elif row_index == 1:
             return 'K1'
         elif row_index == 2:
-            return 'k1_Chinese' if is_bilingual_line else 'Default'
+            return 'k1_Chinese' if is_bilingual_line else 'K2'
         elif row_index == 3:
-            return 'Default'
-        return 'Default'
+            return 'K2'
+        return 'K2'
     
     def should_show_history(self, i, events):
         """判断是否显示历史歌词"""
@@ -465,20 +483,20 @@ Style: Default,{self.default_font},30,&H80FFFFFF,&H80FFFFFF,&H00000000,&H0000000
             preview_end_1 = self.adjust_time(original_start_time, -self.preview_duration/2)
             
             x, y = self.positions[3]
-            effect = f"\\move({x},{y+500},{x},{y},0,300)"
+            effect = f"{{\\move({x},{y+500},{x},{y},0,300)}}"
             cleaned_text = self.clean_text_for_history_preview(event['line1'])
             
-            output_lines.append(f"Dialogue: 0,{preview_start_1},{preview_end_1},Default,,0,0,0,,{{{effect}}}{cleaned_text}")
+            output_lines.append(f"Dialogue: 0,{preview_start_1},{preview_end_1},K2,,0,0,0,,{effect}{cleaned_text}")
             
             # 阶段2：提前1秒开始
             preview_start_2 = preview_end_1
             preview_end_2 = original_start_time
             
             x, y = self.positions[2]
-            effect = f"\\move({x},{y+300},{x},{y},0,200)"
+            effect = f"{{\\move({x},{y+300},{x},{y},0,200)}}"
             current_text = self.clean_text_for_current(event['line1'])
             
-            output_lines.append(f"Dialogue: 0,{preview_start_2},{preview_end_2},Default,,0,0,0,,{{{effect}}}{current_text}")
+            output_lines.append(f"Dialogue: 0,{preview_start_2},{preview_end_2},K2,,0,0,0,,{effect}{current_text}")
             
             # 检查是否有下一句，并且下一句和当前句之间没有间隙
             if event_index + 1 < len(events):
@@ -489,10 +507,10 @@ Style: Default,{self.default_font},30,&H80FFFFFF,&H80FFFFFF,&H00000000,&H0000000
                 # 才在预览阶段显示下一句
                 if time_to_next <= self.seamless_threshold:
                     x, y = self.positions[3]
-                    effect = f"\\move({x},{y+200},{x},{y},0,200)"
+                    effect = f"{{\\move({x},{y+200},{x},{y},0,200)}}"
                     cleaned_next_text = self.clean_text_for_history_preview(next_event['line1'])
                     
-                    output_lines.append(f"Dialogue: 0,{preview_start_2},{preview_end_2},Default,,0,0,0,,{{{effect}}}{cleaned_next_text}")
+                    output_lines.append(f"Dialogue: 0,{preview_start_2},{preview_end_2},K2,,0,0,0,,{effect}{cleaned_next_text}")
                 else:
                     # 如果和下一句有间隙，则不预备下一句
                     # 下一句会在短间隙预备效果中显示（如果适用）
@@ -528,17 +546,17 @@ Style: Default,{self.default_font},30,&H80FFFFFF,&H80FFFFFF,&H00000000,&H0000000
         
         cleaned_text = self.clean_text_for_history_preview(next_event['line1'])
         
-        output_lines.append(f"Dialogue: 0,{preview_start},{preview_end},Default,,0,0,0,,{{{effect}}}{cleaned_text}")
+        output_lines.append(f"Dialogue: 0,{preview_start},{preview_end},K2,,0,0,0,,{{{effect}}}{cleaned_text}")
     
-    def convert_to_prompter(self, events, output_file):
+    def convert_to_prompter(self, events, output_file, default_style_events=None):
         """转换为提词器格式"""
-        if not events:
+        if not events and not default_style_events:
             self.log("错误：没有可处理的事件！")
             return
         
         output_lines = [
             "[Script Info]",
-            "Title: 提词器模式",
+            "Title: 提词器效果",
             "ScriptType: v4.00+",
             "WrapStyle: 0",
             "ScaledBorderAndShadow: yes",
@@ -635,6 +653,15 @@ Style: Default,{self.default_font},30,&H80FFFFFF,&H80FFFFFF,&H00000000,&H0000000
                     
                     output_lines.append(f"Dialogue: 0,{start_time},{end_time},{style},,0,0,0,,{{{effect}}}{marked_text}")
         
+        # 添加默认样式的字幕（保留原始格式）
+        if default_style_events:
+            for event in default_style_events:
+                # 直接添加原始默认样式的对话行，不做任何修改
+                # 由于我们在解析时已经保存了完整的对话行信息，这里需要重新构建
+                # 注意：原始对话行的格式可能包含更多字段，我们需要确保格式正确
+                # 简化处理：直接使用 "Dialogue: 0,start,end,style,,0,0,0,,text" 格式
+                output_lines.append(f"Dialogue: 0,{event['start']},{event['end']},{event['style']},,0,0,0,,{event['text']}")
+        
         # 写入文件
         try:
             with open(output_file, 'w', encoding='utf-8') as f:
@@ -655,6 +682,187 @@ def clean_path(path):
         path = path[1:-1]
     return path.strip() if path else ""
 
+
+def restore_original_ass(input_file, output_path=None, verbose=False):
+    """将T.py转换后的ASS文件还原为原始格式"""
+    input_file = clean_path(input_file)
+    
+    if not os.path.exists(input_file):
+        print(f"文件不存在: {input_file}")
+        return
+    
+    if verbose:
+        print(f"[INFO] 正在读取文件: {input_file}")
+    
+    try:
+        with open(input_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except:
+        try:
+            with open(input_file, 'r', encoding='utf-8-sig') as f:
+                content = f.read()
+        except:
+            try:
+                with open(input_file, 'r', encoding='gbk') as f:
+                    content = f.read()
+            except Exception as e:
+                print(f"[ERROR] 读取文件失败: {e}")
+                return
+    
+    # 提取原始字体信息
+    def extract_font_from_content(content):
+        """从ASS内容中提取字体信息"""
+        lines = content.split('\n')
+        in_styles = False
+        
+        for line in lines:
+            line = line.strip()
+            
+            if line == '[V4+ Styles]' or line == '[V4 Styles]':
+                in_styles = True
+                continue
+            elif line.startswith('[') and in_styles:
+                in_styles = False
+                continue
+            
+            if in_styles and line.startswith('Style:'):
+                parts = line.split(',')
+                if len(parts) > 1:
+                    fontname = parts[1].strip()
+                    if fontname and not fontname.startswith('@'):
+                        return fontname
+        
+        return None
+    
+    font_name = extract_font_from_content(content)
+    if not font_name:
+        font_name = "Microsoft YaHei"
+        if verbose:
+            print(f"[WARN] 未找到字体，使用默认字体: {font_name}")
+    else:
+        if verbose:
+            print(f"[OK] 从输入文件提取字体: {font_name}")
+    
+    # 提取对话行
+    dialogues = []
+    for line in content.split('\n'):
+        line = line.strip()
+        if line.startswith('Dialogue:'):
+            parts = line.split(',', 9)
+            if len(parts) >= 10:
+                start_time = parts[1].strip()
+                end_time = parts[2].strip()
+                style = parts[3].strip()
+                text = parts[9].strip()
+                
+                # 保留指定样式的行，同时也保留Default样式，忽略K2样式（历史歌词和预备歌词）
+                if style in ['k1', 'k1_Chinese', 'K1', 'Default']:  # 同时处理大小写
+                    if style.lower() == 'default':
+                        # 对于Default样式，直接保留原始文本，不做处理
+                        processed_text = text
+                        # 清理标记符号
+                        processed_text = re.sub(r'\uE801', '', processed_text)
+                        # 删除所有特效标签
+                        processed_text = re.sub(r'\{[^}]*\}', '', processed_text)
+                        # 清理文本，删除其他转义序列
+                        processed_text = re.sub(r'\\\w*', '', processed_text)
+                        processed_text = re.sub(r'\s+', ' ', processed_text).strip()
+                        if processed_text:
+                            dialogues.append((start_time, end_time, processed_text, 'Default'))
+                    else:
+                        # 对于非Default样式，处理K值标签
+                        processed_text = text
+                        
+                        # 直接从原始文本中提取K值标签和文本
+                        # 首先删除标记符号
+                        processed_text = re.sub(r'\uE801', '', processed_text)
+                        
+                        # 然后只删除非K值特效标签，保留K值标签及其在文本中的位置
+                        # 使用正则表达式替换所有不是K值标签的标签
+                        def preserve_k_tags(match):
+                            tag = match.group(0)
+                            # 如果是K值标签，保留它
+                            if re.match(r'^\{\\[Kk][0-9df]*\}$', tag):
+                                return tag
+                            # 否则删除它
+                            return ''
+                        
+                        # 删除所有非K值标签
+                        processed_text = re.sub(r'\{[^}]*\}', preserve_k_tags, processed_text)
+                        
+                        # 清理文本，删除其他转义序列
+                        processed_text = re.sub(r'\\[^Kk]\w*', '', processed_text)
+                        processed_text = re.sub(r'\s+', ' ', processed_text).strip()
+                        
+                        if processed_text:
+                            dialogues.append((start_time, end_time, processed_text, 'Karaoke'))
+    
+    # 按时间排序
+    def time_to_seconds(time_str):
+        try:
+            time_str = time_str.replace(',', '.')
+            if '.' in time_str:
+                hms, cs = time_str.split('.')
+                if len(cs) == 3:  # 毫秒格式
+                    cs = cs[:2] + '0'
+                elif len(cs) == 1:
+                    cs = cs + '0'
+                elif len(cs) > 3:
+                    cs = cs[:2]
+            else:
+                hms, cs = time_str, "00"
+            
+            h, m, s = hms.split(':')
+            cs = cs[:2].ljust(2, '0')
+            return int(h) * 3600 + int(m) * 60 + int(s) + int(cs) / 100.0
+        except:
+            return 0.0
+    
+    dialogues.sort(key=lambda x: (time_to_seconds(x[0]), x[0], x[1]))
+    
+    # 生成原始格式的对话行，根据样式类型应用不同的样式
+    original_dialogues = []
+    for dialogue in dialogues:
+        start_time, end_time, text, style = dialogue
+        original_dialogues.append(f"Dialogue: 0,{start_time},{end_time},{style},,0000,0000,0000,,{text}")
+    
+    # 生成输出文件名
+    input_path = Path(input_file)
+    if output_path:
+        output_file = clean_path(output_path)
+    else:
+        output_file = str(input_path.parent / f"{input_path.stem}_还原.ass")
+    
+    # 生成原始格式的ASS内容
+    original_content = f"""[Script Info]
+Title:
+ScriptType: v4.00+
+Collisions: Normal
+PlayResX: 1920
+PlayResY: 1080
+Timer: 100.0000
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,方正准圆简体,40,&H00FFFFFF,&H00000000,&H00804000,&H00000000,-1,0,0,0,100,100,0,0,1,2,1,2,5,5,2,134
+Style: Karaoke,{font_name},50,&H00FF80FF,&H00FFFFFF,&H00804000,&H00000000,-1,0,0,0,100,100,0,0,1,2,1,2,5,5,2,134
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+{chr(10).join(original_dialogues)}
+"""
+    
+    try:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(original_content)
+        
+        print(f"转换完成！生成 {len(original_dialogues)} 行字幕")
+        print(f"输出文件: {output_file}")
+        
+    except Exception as e:
+        print(f"写入文件失败: {e}")
 
 def main():
     if sys.platform == "win32":
@@ -679,6 +887,7 @@ def main():
                        help='字体模式：0=自动识别原文件字体，1=使用自定义字体（默认为0）')
     parser.add_argument('-fn', '--font-name', help='自定义字体名称（仅当font-mode=1时有效）')
     parser.add_argument('-v', '--verbose', action='store_true', help='启用详细日志输出')
+    parser.add_argument('-r', '--restore', action='store_true', help='还原模式，将转换后的文件还原为原始格式')
     
     parser.add_argument('-pgst', '--preview-gap-show-time', type=float, default=0.5, 
                        help='短间隙预备：在下一句开始前显示时间（秒），默认0.5')
@@ -701,15 +910,24 @@ def main():
         print("  -f 1 -fn \"字体名\" : 使用自定义字体")
         print("  -p \"x1,y1 x2,y2 x3,y3 x4,y4\" : 设置四行位置")
         print("  -m \"标记\" : 设置当前演唱标记")
+        print("  -r : 还原模式，将转换后的文件还原为原始格式")
         print("")
         print("示例:")
         print("  python T.py input.ass -v")
         print("  python T.py input.ass -f 1 -fn \"Arial\"")
         print("  python T.py input.ass -p \"200,920 200,980 200,1020 200,1060\"")
+        print("  python T.py input.ass -r  # 还原文件")
         return
     
     if not os.path.exists(input_file):
         print(f"文件不存在: {input_file}")
+        return
+    
+    # 还原模式：如果文件名包含提词器效果，则自动使用还原模式
+    auto_restore = args.restore or '提词器效果' in os.path.basename(input_file)
+    
+    if auto_restore:
+        restore_original_ass(input_file, args.output, args.verbose)
         return
     
     # 创建转换器
@@ -748,12 +966,12 @@ def main():
     if args.output:
         output_file = clean_path(args.output)
     else:
-        output_file = str(input_path.parent / f"{input_path.stem}_提词器.ass")
+        output_file = str(input_path.parent / f"{input_path.stem}_提词器效果.ass")
     
     try:
-        events = converter.parse_ass_content(content)
-        if events:
-            converter.convert_to_prompter(events, output_file)
+        events, default_style_events = converter.parse_ass_content(content)
+        if events or default_style_events:
+            converter.convert_to_prompter(events, output_file, default_style_events)
         else:
             converter.log("没有找到可处理的字幕内容")
     except Exception as e:

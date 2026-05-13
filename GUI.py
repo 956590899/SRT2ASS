@@ -1,13 +1,20 @@
 import tkinter as tk
 from tkinter import ttk
 from tkinter import filedialog
-from tkinterdnd2 import TkinterDnD, DND_FILES
 import subprocess
 import os
 import sys
 import threading
 import re
 import json
+
+# 自动安装缺失的依赖
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+except ImportError:
+    print("tkinterdnd2 未安装，正在安装...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "tkinterdnd2", "--no-cache-dir"])
+    from tkinterdnd2 import TkinterDnD, DND_FILES
 
 # ============================================
 # 配置区 - 用于保存GUI字体配置
@@ -19,8 +26,8 @@ GUI_CONFIG = {
   "ui_font_size": 15.0,
   "ui_bold": True,
   "remember_window_position": True,
-  "window_x": 1297,
-  "window_y": 562,
+  "window_x": 680,
+  "window_y": 196,
   "window_width": 1150,
   "window_height": 800
 }
@@ -30,7 +37,7 @@ class MainGUI:
     def __init__(self, root):
         self.root = root
         # 添加版本号
-        self.version = "1.5.0 Summerキッス "
+        self.version = "1.8.0 Summerキッス "
         self.root.title(f"字幕制作工具 - {self.version}")
         
         # 加载并应用窗口位置和大小设置
@@ -286,12 +293,14 @@ class MainGUI:
         functions = [
             ("字幕校对打包程序", lambda: self.run_program("Z.py")),
             ("字幕式样打包替换", lambda: self.run_program("Z1.py")),
-            ("字幕字体打包替换", lambda: self.run_program("D.py")),
+            # ("字幕字体打包替换", lambda: self.run_program("D.py")),  # 已集成到字幕式样打包替换页面
             ("字幕文件独立修改", lambda: self.show_subtitle_independent_modification()),  # 添加字幕文件独立修改作为第四个大类，使用独立处理函数
             ("立体声转5.1声道", lambda: self.run_program("M.py")),  # 添加立体声转5.1声道作为第五个大类
             ("人声分离", lambda: self.run_program("x.py")),  # 添加人声分离作为第六个大类
             ("歌词适配", lambda: self.run_program("V.py")),  # 将歌词适配移到人声分离下面作为第七个大类
-            ("设置选项", lambda: self.show_settings())  # 添加设置选项作为第八个大类
+            ("媒体格式转换", lambda: self.show_media_converter()),  # 添加媒体格式转换作为第八个大类
+            ("音频文件重命名", lambda: self.show_audio_renamer()),  # 添加音频文件重命名作为第九个大类
+            ("设置选项", lambda: self.show_settings())  # 添加设置选项作为第十个大类
         ]
         
         for text, command in functions:
@@ -408,6 +417,42 @@ class MainGUI:
         if GUI_CONFIG["remember_window_position"]:
             self.save_window_position()
     
+    def show_media_converter(self):
+        """显示媒体格式转换界面"""
+        self.clear_right_frame()
+        # 导入MediaConverter模块
+        from MediaConverter import TS2MP4Converter
+        # 创建媒体转换界面，传递字体配置
+        font_config = {
+            "ui_font": GUI_CONFIG.get("ui_font", "微软雅黑"),
+            "ui_font_size": GUI_CONFIG.get("ui_font_size", 16.0),
+            "ui_bold": GUI_CONFIG.get("ui_bold", False)
+        }
+        converter = TS2MP4Converter(self.right_frame, font_config=font_config)
+        # 高亮对应的功能按钮
+        for i, btn in enumerate(self.buttons):
+            if i == 6:  # 媒体格式转换是第七个按钮（因为注释掉了字幕字体打包替换）
+                self.highlight_button(btn)
+                break
+    
+    def show_audio_renamer(self):
+        """显示音频文件重命名界面"""
+        self.clear_right_frame()
+        # 导入RENameAudio模块
+        from RENameAudio import AudioRenamerApp
+        # 创建音频重命名界面，传递字体配置
+        font_config = {
+            "ui_font": GUI_CONFIG.get("ui_font", "微软雅黑"),
+            "ui_font_size": GUI_CONFIG.get("ui_font_size", 16.0),
+            "ui_bold": GUI_CONFIG.get("ui_bold", False)
+        }
+        renamer = AudioRenamerApp(self.right_frame, font_config=font_config)
+        # 高亮对应的功能按钮
+        for i, btn in enumerate(self.buttons):
+            if i == 7:  # 音频文件重命名是第八个按钮（因为注释掉了字幕字体打包替换）
+                self.highlight_button(btn)
+                break
+    
     def show_settings(self):
         """显示设置选项，作为一个独立的大类"""
         # 声明全局变量
@@ -419,22 +464,22 @@ class MainGUI:
         settings_frame = ttk.LabelFrame(self.right_frame, text="设置选项")
         settings_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
         
-        # 创建窗口设置框架
-        window_frame = ttk.LabelFrame(settings_frame, text="窗口设置")
-        window_frame.pack(fill=tk.X, padx=4, pady=2)
+        # 窗口设置（上）
+        left_frame = ttk.LabelFrame(settings_frame, text="窗口设置")
+        left_frame.pack(fill=tk.X, padx=4, pady=2)
         
         # 记住窗口位置选项
-        remember_window_frame = ttk.Frame(window_frame)
-        remember_window_frame.pack(fill=tk.X, padx=4, pady=2)
+        remember_window_frame = ttk.Frame(left_frame)
+        remember_window_frame.pack(fill=tk.X, padx=4, pady=1)
         
-        ttk.Label(remember_window_frame, text="记住窗口位置: " ).pack(side=tk.LEFT, padx=4, pady=2)
+        ttk.Label(remember_window_frame, text="记住窗口位置: " ).pack(side=tk.LEFT, padx=4, pady=1)
         
         # 加载保存的设置
         saved_remember_window = GUI_CONFIG.get("remember_window_position", False)
         self.remember_window_var = tk.BooleanVar(value=saved_remember_window)
         
-        ttk.Radiobutton(remember_window_frame, text="关闭", variable=self.remember_window_var, value=False).pack(side=tk.LEFT, padx=4, pady=2)
-        ttk.Radiobutton(remember_window_frame, text="开启", variable=self.remember_window_var, value=True).pack(side=tk.LEFT, padx=4, pady=2)
+        ttk.Radiobutton(remember_window_frame, text="关闭", variable=self.remember_window_var, value=False).pack(side=tk.LEFT, padx=4, pady=1)
+        ttk.Radiobutton(remember_window_frame, text="开启", variable=self.remember_window_var, value=True).pack(side=tk.LEFT, padx=4, pady=1)
         
         # 添加提示信息
         # 获取当前字体配置，使用相对字体大小
@@ -443,20 +488,20 @@ class MainGUI:
         # 使用相对字体大小，比主文本小约20%
         small_font_size = max(6, int(round(font_size * 0.8)))
         font_weight = "bold" if GUI_CONFIG.get("ui_bold", False) else "normal"
-        ttk.Label(remember_window_frame, text="(开启后下次启动将记住当前窗口位置)", foreground="#808080", font=(selected_font, small_font_size, font_weight)).pack(side=tk.LEFT, padx=4, pady=2)
+        ttk.Label(remember_window_frame, text="(开启后下次启动将记住当前窗口位置)", foreground="#808080", font=(selected_font, small_font_size, font_weight)).pack(side=tk.LEFT, padx=4, pady=1)
         
         # 绑定状态变化事件
         self.remember_window_var.trace_add("write", self.on_remember_window_changed)
         
-        # 创建UI字体设置框架
-        ui_font_frame = ttk.LabelFrame(settings_frame, text="UI字体设置")
-        ui_font_frame.pack(fill=tk.X, padx=4, pady=2)
+        # UI字体设置（下）
+        right_frame = ttk.LabelFrame(settings_frame, text="UI字体设置")
+        right_frame.pack(fill=tk.X, padx=4, pady=2)
         
         # 字体选择
-        font_choice_frame = ttk.Frame(ui_font_frame)
-        font_choice_frame.pack(fill=tk.X, padx=4, pady=2)
+        font_choice_frame = ttk.Frame(right_frame)
+        font_choice_frame.pack(fill=tk.X, padx=4, pady=1)
         
-        ttk.Label(font_choice_frame, text="字体选择: " ).pack(side=tk.LEFT, padx=4, pady=2)
+        ttk.Label(font_choice_frame, text="字体选择: " ).pack(side=tk.LEFT, padx=4, pady=1)
         
         # 常用系统字体列表
         system_fonts = ["微软雅黑", "等线", "仿宋", "黑体", "楷体", "新宋体"]
@@ -465,13 +510,13 @@ class MainGUI:
         self.ui_font_var = tk.StringVar(value=saved_font)
         
         font_combobox = ttk.Combobox(font_choice_frame, textvariable=self.ui_font_var, values=system_fonts, width=20, state="readonly", style="Custom.TCombobox")
-        font_combobox.pack(side=tk.LEFT, padx=4, pady=2)
+        font_combobox.pack(side=tk.LEFT, padx=4, pady=1)
         
         # 字体加粗选项
-        bold_frame = ttk.Frame(ui_font_frame)
-        bold_frame.pack(fill=tk.X, padx=4, pady=2)
+        bold_frame = ttk.Frame(right_frame)
+        bold_frame.pack(fill=tk.X, padx=4, pady=1)
         
-        ttk.Label(bold_frame, text="字体加粗: " ).pack(side=tk.LEFT, padx=4, pady=2)
+        ttk.Label(bold_frame, text="字体加粗: " ).pack(side=tk.LEFT, padx=4, pady=1)
         
         saved_bold = 1 if GUI_CONFIG.get("ui_bold", False) else 0
         self.ui_bold_var = tk.IntVar(value=saved_bold)
@@ -513,18 +558,18 @@ class MainGUI:
             font=(selected_font, font_size_int, font_weight),
             relief="flat"
         )
-        self.font_bold_checkbox.pack(side=tk.LEFT, padx=4, pady=2)
+        self.font_bold_checkbox.pack(side=tk.LEFT, padx=4, pady=1)
         
         # 字体大小调节
-        font_size_frame = ttk.Frame(ui_font_frame)
-        font_size_frame.pack(fill=tk.X, padx=4, pady=2)
+        font_size_frame = ttk.Frame(right_frame)
+        font_size_frame.pack(fill=tk.X, padx=4, pady=1)
         
-        ttk.Label(font_size_frame, text="字体大小: " ).pack(side=tk.LEFT, padx=4, pady=2)
+        ttk.Label(font_size_frame, text="字体大小: " ).pack(side=tk.LEFT, padx=4, pady=1)
         
         saved_font_size = float(GUI_CONFIG.get("ui_font_size", 10.0))
         self.ui_font_size_var = tk.DoubleVar(value=saved_font_size)
         font_size_label = ttk.Label(font_size_frame, text="", width=5)
-        font_size_label.pack(side=tk.LEFT, padx=4, pady=2)
+        font_size_label.pack(side=tk.LEFT, padx=4, pady=1)
         
         # 更新字体大小标签的函数
         def update_font_size_label():
@@ -538,8 +583,8 @@ class MainGUI:
         self.ui_font_size_var.trace_add("write", lambda *args: update_font_size_label())
         
         # 字体大小调节按钮
-        ttk.Button(font_size_frame, text="-0.5", command=lambda: self.adjust_font_size(-0.5)).pack(side=tk.LEFT, padx=4, pady=2)
-        ttk.Button(font_size_frame, text="+0.5", command=lambda: self.adjust_font_size(0.5)).pack(side=tk.LEFT, padx=4, pady=2)
+        ttk.Button(font_size_frame, text="-0.5", command=lambda: self.adjust_font_size(-0.5)).pack(side=tk.LEFT, padx=4, pady=1)
+        ttk.Button(font_size_frame, text="+0.5", command=lambda: self.adjust_font_size(0.5)).pack(side=tk.LEFT, padx=4, pady=1)
         
         # 添加提示信息
         # 获取当前字体配置，保持较小字号但应用加粗设置
@@ -547,20 +592,20 @@ class MainGUI:
         font_weight = "bold" if GUI_CONFIG.get("ui_bold", False) else "normal"
         # 获取当前字体配置，使用相对字体大小
         small_font_size = max(6, int(round(font_size * 0.8)))
-        ttk.Label(font_size_frame, text="(调整单位: 0.5，范围: 5.0-30.0)", foreground="#808080", font=(selected_font, small_font_size, font_weight)).pack(side=tk.LEFT, padx=4, pady=2)
+        ttk.Label(font_size_frame, text="(调整单位: 0.5，范围: 5.0-30.0)", foreground="#808080", font=(selected_font, small_font_size, font_weight)).pack(side=tk.LEFT, padx=4, pady=1)
         
         # 应用按钮
-        apply_frame = ttk.Frame(ui_font_frame)
+        apply_frame = ttk.Frame(right_frame)
         apply_frame.pack(fill=tk.X, padx=4, pady=10)
         
-        ttk.Button(apply_frame, text="应用字体设置", command=self.apply_ui_font_settings).pack(side=tk.LEFT, padx=4, pady=2)
+        ttk.Button(apply_frame, text="应用字体设置", command=self.apply_ui_font_settings).pack(side=tk.LEFT, padx=4, pady=1)
         
         # 初始化进程为None
         self.process = None
         
         # 高亮对应的功能按钮
         for i, btn in enumerate(self.buttons):
-            if i == 7:  # 设置选项是第八个大类
+            if i == 8:  # 设置选项是第九个大类（因为注释掉了字幕字体打包替换）
                 self.highlight_button(btn)
                 break
     
@@ -614,13 +659,57 @@ class MainGUI:
                     config["SUBTITLE_MODE"] = subtitle_mode
                 else:
                     config["SUBTITLE_MODE"] = 2
+                
+                # 提取ENABLE_FONT_REPLACEMENT，支持带有注释的情况
+                match = re.search(r'ENABLE_FONT_REPLACEMENT\s*=\s*(\d+)\s*(#.*)?', content)
+                if match:
+                    config["ENABLE_FONT_REPLACEMENT"] = int(match.group(1))
+                else:
+                    config["ENABLE_FONT_REPLACEMENT"] = 1
+                
+                # 提取FONT_SETTING，支持带有注释的情况
+                match = re.search(r'FONT_SETTING\s*=\s*(\d+)\s*(#.*)?', content)
+                if match:
+                    config["FONT_SETTING"] = int(match.group(1))
+                else:
+                    config["FONT_SETTING"] = 0
+                
+                # 提取字体配置
+                # 提取系统字体
+                match = re.search(r'"default_font_name":\s*"([^"]*)"', content)
+                if match:
+                    system_font = match.group(1)
+                    # 映射英文字体名称到中文
+                    font_name_mapping = {
+                        "Microsoft YaHei": "微软雅黑",
+                        "SimSun": "宋体",
+                        "SimHei": "黑体",
+                        "KaiTi": "楷体"
+                    }
+                    # 如果系统字体是英文名称，转换为中文
+                    if system_font in font_name_mapping:
+                        system_font = font_name_mapping[system_font]
+                    config["SYSTEM_FONT"] = system_font
+                else:
+                    config["SYSTEM_FONT"] = "微软雅黑"
+                
+                # 提取简体中文字体
+                match = re.search(r'"simplified_chinese":\s*\{[^\}]*"font_name":\s*"([^"]*)"', content)
+                if match:
+                    config["SIMPLIFIED_CHINESE_FONT"] = match.group(1)
+                else:
+                    config["SIMPLIFIED_CHINESE_FONT"] = "方正准圆简体"
                     
         except Exception as e:
             print(f"读取Z1.py配置失败: {e}")
             config = {
                 "DEFAULT_SETTINGS_MODE": 1,
                 "STEREO_TO_5_1": 0,
-                "SUBTITLE_MODE": 2
+                "SUBTITLE_MODE": 2,
+                "ENABLE_FONT_REPLACEMENT": 1,
+                "FONT_SETTING": 0,
+                "SYSTEM_FONT": "微软雅黑",
+                "SIMPLIFIED_CHINESE_FONT": "方正准圆简体"
             }
         
         return config
@@ -890,6 +979,43 @@ class MainGUI:
                 content = re.sub(r'SUBTITLE_MODE\s*=\s*-?\d+\s*#.*', f'SUBTITLE_MODE = {mode}  # 0、1、2或-1（全选）', content)
                 content = re.sub(r'SUBTITLE_MODE\s*=\s*-?\d+', f'SUBTITLE_MODE = {mode}', content)
             
+            # 更新ENABLE_FONT_REPLACEMENT
+            if hasattr(self, 'enable_font_replacement_var'):
+                mode = self.enable_font_replacement_var.get()
+                # 确保能匹配带有注释的情况
+                content = re.sub(r'ENABLE_FONT_REPLACEMENT\s*=\s*\d+\s*#.*', f'ENABLE_FONT_REPLACEMENT = {mode}  # 0或1', content)
+                content = re.sub(r'ENABLE_FONT_REPLACEMENT\s*=\s*\d+', f'ENABLE_FONT_REPLACEMENT = {mode}', content)
+            
+
+            
+            # 更新FONT_SETTING
+            if hasattr(self, 'font_setting_var'):
+                mode = self.font_setting_var.get()
+                # 确保能匹配带有注释的情况
+                content = re.sub(r'FONT_SETTING\s*=\s*\d+\s*#.*', f'FONT_SETTING = {mode}  # 0、1或2', content)
+                content = re.sub(r'FONT_SETTING\s*=\s*\d+', f'FONT_SETTING = {mode}', content)
+            
+            # 更新字体配置
+            if hasattr(self, 'system_font_var'):
+                system_font = self.system_font_var.get()
+                # 映射中文字体名称到英文
+                font_name_mapping = {
+                    "微软雅黑": "Microsoft YaHei",
+                    "宋体": "SimSun",
+                    "黑体": "SimHei",
+                    "楷体": "KaiTi"
+                }
+                # 如果系统字体是中文名称，转换为英文
+                if system_font in font_name_mapping:
+                    system_font = font_name_mapping[system_font]
+                # 更新系统字体
+                content = re.sub(r'"default_font_name":\s*"[^"]*"', f'"default_font_name": "{system_font}"', content)
+            
+            if hasattr(self, 'sc_font_var'):
+                sc_font = self.sc_font_var.get()
+                # 更新简体中文字体
+                content = re.sub(r'"font_name":\s*"[^"]*",\s*"font_file":\s*"[^"]*"', f'"font_name": "{sc_font}", "font_file": "{sc_font}.ttf"', content)
+            
             with open(z1_path, "w", encoding="utf-8") as f:
                 f.write(content)
                 
@@ -906,6 +1032,39 @@ class MainGUI:
         self.subtitle_mode_var.set(clicked_value)
         # 重置全选模式标志
         self.is_all_selected = False
+    
+    def update_font_settings(self):
+        """根据字体设置选项更新各个控件的状态"""
+        # 检查是否存在font_setting_var变量
+        if hasattr(self, 'font_setting_var'):
+            font_setting = self.font_setting_var.get()
+            
+            if font_setting == 0:  # 默认（不启用修改）
+                # 所有选项全灰
+                if hasattr(self, 'system_font_combobox'):
+                    self.system_font_combobox.config(state="disabled")
+                if hasattr(self, 'sc_font_combobox'):
+                    self.sc_font_combobox.config(state="disabled")
+                if hasattr(self, 'jt_font_combobox'):
+                    self.jt_font_combobox.config(state="disabled")
+                
+            elif font_setting == 1:  # 系统字体
+                # 只能改系统字体
+                if hasattr(self, 'system_font_combobox'):
+                    self.system_font_combobox.config(state="readonly")
+                if hasattr(self, 'sc_font_combobox'):
+                    self.sc_font_combobox.config(state="disabled")
+                if hasattr(self, 'jt_font_combobox'):
+                    self.jt_font_combobox.config(state="disabled")
+                
+            elif font_setting == 2:  # 自定义字体
+                # 只开放修改自定义字体，日语始终锁定
+                if hasattr(self, 'system_font_combobox'):
+                    self.system_font_combobox.config(state="disabled")
+                if hasattr(self, 'sc_font_combobox'):
+                    self.sc_font_combobox.config(state="readonly")
+                if hasattr(self, 'jt_font_combobox'):
+                    self.jt_font_combobox.config(state="disabled")
     
     def on_karaoke_effect_radio_click(self, clicked_value):
         """处理卡拉OK效果单选按钮的点击事件，实现纯粹的单选逻辑：
@@ -967,11 +1126,26 @@ class MainGUI:
                 else:
                     config["SAVE_ORIGINAL_LRC"] = 0
                 
+                # 提取LYRIC_FETCH_METHOD
+                match = re.search(r'LYRIC_FETCH_METHOD\s*=\s*(\d+)', content)
+                if match:
+                    config["LYRIC_FETCH_METHOD"] = int(match.group(1))
+                else:
+                    config["LYRIC_FETCH_METHOD"] = 0
+                
+                # 提取ENABLE_DUAL_LANGUAGE_LYRIC
+                match = re.search(r'ENABLE_DUAL_LANGUAGE_LYRIC\s*=\s*(\d+)', content)
+                if match:
+                    config["ENABLE_DUAL_LANGUAGE_LYRIC"] = int(match.group(1))
+                else:
+                    config["ENABLE_DUAL_LANGUAGE_LYRIC"] = 1
+                
         except Exception as e:
             print(f"读取V.py配置失败: {e}")
             config = {
                 "ENABLE_Z_PACKAGING": 1,
-                "SAVE_ORIGINAL_LRC": 0
+                "SAVE_ORIGINAL_LRC": 0,
+                "LYRIC_FETCH_METHOD": 0
             }
         
         return config
@@ -993,6 +1167,16 @@ class MainGUI:
             if hasattr(self, 'save_original_lrc_var'):
                 mode = self.save_original_lrc_var.get()
                 content = re.sub(r'SAVE_ORIGINAL_LRC\s*=\s*\d+', f'SAVE_ORIGINAL_LRC = {mode}', content)
+            
+            # 更新LYRIC_FETCH_METHOD
+            if hasattr(self, 'lyric_fetch_method_var'):
+                mode = self.lyric_fetch_method_var.get()
+                content = re.sub(r'LYRIC_FETCH_METHOD\s*=\s*\d+', f'LYRIC_FETCH_METHOD = {mode}', content)
+            
+            # 更新ENABLE_DUAL_LANGUAGE_LYRIC
+            if hasattr(self, 'enable_dual_language_var'):
+                mode = self.enable_dual_language_var.get()
+                content = re.sub(r'ENABLE_DUAL_LANGUAGE_LYRIC\s*=\s*\d+', f'ENABLE_DUAL_LANGUAGE_LYRIC = {mode}', content)
             
             with open(v_path, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -1094,6 +1278,21 @@ class MainGUI:
         # 构建程序路径
         program_path = os.path.join(current_dir, program_name)
         
+        # 高亮对应的功能按钮
+        # 定义program_name与按钮索引的对应关系
+        program_to_index = {
+            "Z.py": 0,  # 字幕校对打包程序
+            "Z1.py": 1,  # 字幕式样打包替换
+            "M.py": 3,   # 立体声转5.1声道
+            "x.py": 4,   # 人声分离
+            "V.py": 5    # 歌词适配
+        }
+        
+        # 查找对应的按钮索引
+        target_index = program_to_index.get(program_name)
+        if target_index is not None and 0 <= target_index < len(self.buttons):
+            self.highlight_button(self.buttons[target_index])
+        
         # 更新右侧工作区显示
         self.clear_right_frame()
         
@@ -1144,7 +1343,7 @@ class MainGUI:
                 "================",
                 "",
                 "功能说明：",
-                "- 自动识别字体文件夹SRT2ASS\SRT\TTF",
+                "- 自动识别字体文件夹" + os.path.basename(current_dir) + "\\SRT\\TTF",
                 "- 启用系统自带字体模式不打包字体文件",
                 "- 替换内嵌字幕视频文件中的字体设置",
                 "- 支持批量替换多个内嵌字幕视频文件",
@@ -1208,6 +1407,45 @@ class MainGUI:
                 "1. 点击'选择文件'按钮选择歌词文件和视频文件",
                 "2. 点击'执行'按钮开始处理",
                 "3. 处理完成后查看输出结果"
+            ]},
+            "MediaConverter.py": {"name": "媒体格式转换", "description": [
+                "===============",
+                "媒体格式转换功能使用说明：",
+                "===============",
+                "",
+                "功能说明：",
+                "- 将TS文件转换为MP4格式",
+                "- 支持批量处理多个文件",
+                "- 支持添加整个文件夹的TS文件",
+                "- 转换完成后可选择是否删除原TS文件",
+                "- 自动在原文件所在目录创建'已转换'文件夹保存输出文件",
+                "",
+                "使用方法：",
+                "1. 点击'添加TS文件'按钮选择要转换的文件",
+                "2. 或点击'打开文件夹'按钮添加整个文件夹的TS文件",
+                "3. 选择是否在转换完成后删除原TS文件",
+                "4. 点击'开始转换'按钮开始处理",
+                "5. 查看转换进度和结果"
+            ]},
+            "RENameAudio.py": {"name": "音频文件重命名", "description": [
+                "===============",
+                "音频文件重命名功能使用说明：",
+                "===============",
+                "",
+                "功能说明：",
+                "- 根据音频文件的元数据（艺术家和标题）自动重命名文件",
+                "- 支持拖放添加文件或文件夹",
+                "- 支持按文件名或专辑图分辨率排序",
+                "- 支持移动文件和在资源管理器中定位文件",
+                "- 自动处理文件名冲突",
+                "- 同步艺术家信息到专辑艺术家字段",
+                "",
+                "使用方法：",
+                "1. 点击'选择文件'或'选择文件夹'按钮添加音频文件",
+                "2. 或直接拖放文件到文件列表区域",
+                "3. 可选择按文件名或专辑图分辨率排序",
+                "4. 点击'开始重命名'按钮开始处理",
+                "5. 查看日志区域的处理结果"
             ]}
         }
         
@@ -1257,6 +1495,15 @@ class MainGUI:
                     width=10
                 )
                 browse_folder_btn.pack(side=tk.RIGHT, padx=4, pady=1)
+            else:
+                # 歌词适配功能添加VVT转SRT按钮
+                vtt_to_srt_btn = ttk.Button(
+                    button_frame, 
+                    text="VVT转SRT", 
+                    command=lambda: self.vtt_to_srt(), 
+                    width=10
+                )
+                vtt_to_srt_btn.pack(side=tk.RIGHT, padx=4, pady=1)
             
             # 添加选择文件按钮
             browse_btn = ttk.Button(
@@ -1539,38 +1786,39 @@ class MainGUI:
             
             # 横向排列的设置框架
             horizontal_frame = ttk.Frame(settings_frame)
-            horizontal_frame.pack(fill=tk.X, padx=4, pady=2)
+            horizontal_frame.pack(fill=tk.X, padx=4, pady=1)
             
-            # 多音轨多字幕默认属性 - 横向
-            mode_frame = ttk.LabelFrame(horizontal_frame, text="多音轨多字幕默认属性")
-            mode_frame.pack(side=tk.LEFT, padx=4, pady=2, fill=tk.Y)
-            # 设置固定大小 - 减小宽度以适应横向排列
-            mode_frame.configure(width=260, height=150)
-            mode_frame.pack_propagate(0)  # 禁用自动调整大小
+            # 字幕式样设置 - 左侧
+            style_frame = ttk.LabelFrame(horizontal_frame, text="字幕式样")
+            style_frame.pack(side=tk.LEFT, padx=4, pady=1, fill=tk.BOTH, expand=True)
+            
+            # 多音轨多字幕默认属性
+            mode_frame = ttk.Frame(style_frame)
+            mode_frame.pack(fill=tk.X, padx=4, pady=1)
+            
+            ttk.Label(mode_frame, text="多音轨默认属性: " ).pack(side=tk.LEFT, padx=4, pady=1)
             
             self.default_settings_mode_var = tk.IntVar(value=z1_config.get("DEFAULT_SETTINGS_MODE", 1))
             
-            ttk.Radiobutton(mode_frame, text="0: 保持原样", variable=self.default_settings_mode_var, value=0).pack(anchor=tk.W, padx=4, pady=2)
-            ttk.Radiobutton(mode_frame, text="1: 默认中文", variable=self.default_settings_mode_var, value=1).pack(anchor=tk.W, padx=4, pady=2)
+            ttk.Radiobutton(mode_frame, text="保持原样", variable=self.default_settings_mode_var, value=0).pack(side=tk.LEFT, padx=4, pady=1)
+            ttk.Radiobutton(mode_frame, text="默认中文", variable=self.default_settings_mode_var, value=1).pack(side=tk.LEFT, padx=4, pady=1)
             
-            # 立体声转5.1声道 - 横向
-            stereo_frame = ttk.LabelFrame(horizontal_frame, text="立体声转5.1声道")
-            stereo_frame.pack(side=tk.LEFT, padx=4, pady=2, fill=tk.Y)
-            # 设置固定大小 - 减小宽度以适应横向排列
-            stereo_frame.configure(width=260, height=150)
-            stereo_frame.pack_propagate(0)  # 禁用自动调整大小
+            # 立体声转5.1声道
+            stereo_frame = ttk.Frame(style_frame)
+            stereo_frame.pack(fill=tk.X, padx=4, pady=1)
+            
+            ttk.Label(stereo_frame, text="立体声转5.1: " ).pack(side=tk.LEFT, padx=4, pady=1)
             
             self.stereo_to_5_1_var = tk.IntVar(value=z1_config.get("STEREO_TO_5_1", 0))
             
-            ttk.Radiobutton(stereo_frame, text="0: 关闭", variable=self.stereo_to_5_1_var, value=0).pack(anchor=tk.W, padx=4, pady=2)
-            ttk.Radiobutton(stereo_frame, text="1: 开启", variable=self.stereo_to_5_1_var, value=1).pack(anchor=tk.W, padx=4, pady=2)
+            ttk.Radiobutton(stereo_frame, text="关闭", variable=self.stereo_to_5_1_var, value=0).pack(side=tk.LEFT, padx=4, pady=1)
+            ttk.Radiobutton(stereo_frame, text="开启", variable=self.stereo_to_5_1_var, value=1).pack(side=tk.LEFT, padx=4, pady=1)
             
-            # 字幕处理模式 - 横向
-            subtitle_frame = ttk.LabelFrame(horizontal_frame, text="字幕显示效果")
-            subtitle_frame.pack(side=tk.LEFT, padx=4, pady=2, fill=tk.Y)
-            # 设置固定大小 - 与其他框架保持一致
-            subtitle_frame.configure(width=260, height=150)
-            subtitle_frame.pack_propagate(0)  # 禁用自动调整大小
+            # 字幕显示效果
+            subtitle_frame = ttk.Frame(style_frame)
+            subtitle_frame.pack(fill=tk.X, padx=4, pady=1)
+            
+            ttk.Label(subtitle_frame, text="字幕效果: " ).pack(side=tk.LEFT, padx=4, pady=1)
             
             # 使用单选按钮实现特殊逻辑：正常单选，点击全选选项进入全选模式
             # 初始化单选按钮变量和全选状态变量
@@ -1578,16 +1826,109 @@ class MainGUI:
             self.is_all_selected = False  # 跟踪是否处于全选模式
             
             # 创建单选按钮，添加全选选项
-            # 直接在subtitle_frame中排列，不使用额外的行框架
-            ttk.Radiobutton(subtitle_frame, text="全选", variable=self.subtitle_mode_var, value=-1, command=lambda: self.on_subtitle_radio_click(-1)).pack(anchor=tk.W, padx=4, pady=2)
-            ttk.Radiobutton(subtitle_frame, text="0: 默认效果", variable=self.subtitle_mode_var, value=0, command=lambda: self.on_subtitle_radio_click(0)).pack(anchor=tk.W, padx=4, pady=2)
-            ttk.Radiobutton(subtitle_frame, text="1: KTV效果", variable=self.subtitle_mode_var, value=1, command=lambda: self.on_subtitle_radio_click(1)).pack(anchor=tk.W, padx=4, pady=2)
-            ttk.Radiobutton(subtitle_frame, text="2: 提词器效果", variable=self.subtitle_mode_var, value=2, command=lambda: self.on_subtitle_radio_click(2)).pack(anchor=tk.W, padx=4, pady=2)
+            ttk.Radiobutton(subtitle_frame, text="全选", variable=self.subtitle_mode_var, value=-1, command=lambda: self.on_subtitle_radio_click(-1)).pack(side=tk.LEFT, padx=4, pady=1)
+            ttk.Radiobutton(subtitle_frame, text="默认", variable=self.subtitle_mode_var, value=0, command=lambda: self.on_subtitle_radio_click(0)).pack(side=tk.LEFT, padx=4, pady=1)
+            ttk.Radiobutton(subtitle_frame, text="KTV", variable=self.subtitle_mode_var, value=1, command=lambda: self.on_subtitle_radio_click(1)).pack(side=tk.LEFT, padx=4, pady=1)
+            ttk.Radiobutton(subtitle_frame, text="提词器", variable=self.subtitle_mode_var, value=2, command=lambda: self.on_subtitle_radio_click(2)).pack(side=tk.LEFT, padx=4, pady=1)
+            
+            # 字体设置 - 右侧
+            font_frame = ttk.LabelFrame(horizontal_frame, text="字体设置")
+            font_frame.pack(side=tk.RIGHT, padx=4, pady=1, fill=tk.BOTH, expand=True)
+            
+            # 字体设置选项
+            font_option_frame = ttk.Frame(font_frame)
+            font_option_frame.pack(fill=tk.X, padx=4, pady=1)
+            
+            ttk.Label(font_option_frame, text="字体设置: " ).pack(side=tk.LEFT, padx=4, pady=1)
+            
+            # 0: 默认（不启用修改）, 1: 系统字体, 2: 自定义字体
+            self.font_setting_var = tk.IntVar(value=z1_config.get("FONT_SETTING", 0))
+            
+            ttk.Radiobutton(font_option_frame, text="默认", variable=self.font_setting_var, value=0, command=self.update_font_settings).pack(side=tk.LEFT, padx=4, pady=1)
+            ttk.Radiobutton(font_option_frame, text="系统字体", variable=self.font_setting_var, value=1, command=self.update_font_settings).pack(side=tk.LEFT, padx=4, pady=1)
+            ttk.Radiobutton(font_option_frame, text="自定义字体", variable=self.font_setting_var, value=2, command=self.update_font_settings).pack(side=tk.LEFT, padx=4, pady=1)
+            
+
+            
+            # 系统自带字体选择
+            system_font_frame = ttk.Frame(font_frame)
+            system_font_frame.pack(fill=tk.X, padx=4, pady=1)
+            
+            ttk.Label(system_font_frame, text="系统自带字体: " ).pack(side=tk.LEFT, padx=4, pady=1)
+            
+            # 常用系统字体列表（只显示中文名称）
+            system_fonts = ["微软雅黑", "宋体", "黑体", "楷体", "Arial"]
+            # 使用从Z1.py中读取的系统字体
+            system_font = z1_config.get("SYSTEM_FONT", "微软雅黑")
+            # 映射英文字体名称到中文
+            font_name_mapping = {
+                "Microsoft YaHei": "微软雅黑",
+                "SimSun": "宋体",
+                "SimHei": "黑体",
+                "KaiTi": "楷体"
+            }
+            # 如果系统字体是英文名称，转换为中文
+            if system_font in font_name_mapping:
+                system_font = font_name_mapping[system_font]
+            # 如果系统字体不在列表中，添加它
+            if system_font not in system_fonts:
+                system_fonts.append(system_font)
+            self.system_font_var = tk.StringVar(value=system_font)
+            
+            self.system_font_combobox = ttk.Combobox(system_font_frame, textvariable=self.system_font_var, values=system_fonts, width=18, state="readonly", style="Custom.TCombobox")
+            self.system_font_combobox.pack(side=tk.LEFT, padx=4, pady=1)
+            
+            # 简体中文字体选择
+            sc_font_frame = ttk.Frame(font_frame)
+            sc_font_frame.pack(fill=tk.X, padx=4, pady=1)
+            
+            ttk.Label(sc_font_frame, text="简体中文字体: " ).pack(side=tk.LEFT, padx=4, pady=1)
+            
+            # 获取可用字体列表
+            available_fonts = self.get_available_fonts()
+            font_names = [font[0] for font in available_fonts]
+            
+            # 使用从Z1.py中读取的简体中文字体
+            sc_font = z1_config.get("SIMPLIFIED_CHINESE_FONT", "方正准圆简体")
+            # 如果简体中文字体不在列表中，添加它
+            if sc_font not in font_names:
+                font_names.append(sc_font)
+            self.sc_font_var = tk.StringVar(value=sc_font)
+            
+            self.sc_font_combobox = ttk.Combobox(sc_font_frame, textvariable=self.sc_font_var, values=font_names, width=18, state="readonly", style="Custom.TCombobox")
+            self.sc_font_combobox.pack(side=tk.LEFT, padx=4, pady=1)
+            
+            # 日语繁体字体选择
+            jt_font_frame = ttk.Frame(font_frame)
+            jt_font_frame.pack(fill=tk.X, padx=4, pady=1)
+            
+            ttk.Label(jt_font_frame, text="日语繁体字体: " ).pack(side=tk.LEFT, padx=4, pady=1)
+            
+            # 日语繁体字体默认值
+            self.jt_font_var = tk.StringVar(value="夏花绚烂前程似锦")
+            
+            self.jt_font_combobox = ttk.Combobox(jt_font_frame, textvariable=self.jt_font_var, values=font_names, width=18, state="disabled", style="Custom.TCombobox")
+            self.jt_font_combobox.pack(side=tk.LEFT, padx=4, pady=1)
+            
+            # 添加状态说明
+            # 获取当前字体配置，使用相对字体大小
+            selected_font = GUI_CONFIG.get("ui_font", "微软雅黑")
+            font_size = GUI_CONFIG.get("ui_font_size", 16.0)
+            # 使用相对字体大小，比主文本小约20%
+            small_font_size = max(6, int(round(font_size * 0.8)))
+            font_weight = "bold" if GUI_CONFIG.get("ui_bold", False) else "normal"
+            ttk.Label(jt_font_frame, text="(暂不开放修改)", foreground="#808080", font=(selected_font, small_font_size, font_weight)).pack(side=tk.LEFT, padx=4, pady=1)
+            
+            # 初始化字体设置状态
+            self.update_font_settings()
             
             # 添加自动保存功能
             self.default_settings_mode_var.trace("w", lambda *args: self.save_z1_settings())
             self.stereo_to_5_1_var.trace("w", lambda *args: self.save_z1_settings())
             self.subtitle_mode_var.trace("w", lambda *args: self.save_z1_settings())
+            self.font_setting_var.trace("w", lambda *args: self.save_z1_settings())
+            self.system_font_var.trace("w", lambda *args: self.save_z1_settings())
+            self.sc_font_var.trace("w", lambda *args: self.save_z1_settings())
             
         elif program_name == "D.py":
             settings_frame = ttk.LabelFrame(self.right_frame, text="字体设置选项")
@@ -1789,9 +2130,44 @@ class MainGUI:
             ttk.Radiobutton(original_lrc_enable_frame, text="不保留", variable=self.save_original_lrc_var, value=0).pack(side=tk.LEFT, padx=4, pady=2)
             ttk.Radiobutton(original_lrc_enable_frame, text="保留", variable=self.save_original_lrc_var, value=1).pack(side=tk.LEFT, padx=4, pady=2)
             
+            # 歌词获取方案设置
+            lyric_fetch_frame = ttk.LabelFrame(settings_frame, text="歌词获取方案")
+            lyric_fetch_frame.pack(fill=tk.X, padx=4, pady=2)
+            
+            # 歌词获取方案选择
+            lyric_fetch_select_frame = ttk.Frame(lyric_fetch_frame)
+            lyric_fetch_select_frame.pack(fill=tk.X, padx=4, pady=2)
+            
+            ttk.Label(lyric_fetch_select_frame, text="歌词获取方式: " ).pack(side=tk.LEFT, padx=4, pady=2)
+            
+            self.lyric_fetch_method_var = tk.IntVar(value=v_config.get("LYRIC_FETCH_METHOD", 0))
+            
+            # 调整顺序：第三方程序放到左边，直接获取放到右边
+            ttk.Radiobutton(lyric_fetch_select_frame, text="使用第三方程序获取", variable=self.lyric_fetch_method_var, value=1).pack(side=tk.LEFT, padx=4, pady=2)
+            ttk.Radiobutton(lyric_fetch_select_frame, text="直接获取", variable=self.lyric_fetch_method_var, value=0).pack(side=tk.LEFT, padx=4, pady=2)
+            
+            # 双语字幕选项，只在直接获取时显示
+            self.enable_dual_language_var = tk.IntVar(value=v_config.get("ENABLE_DUAL_LANGUAGE_LYRIC", 1))
+            self.dual_language_checkbox = ttk.Checkbutton(lyric_fetch_select_frame, text="获取双语字幕", variable=self.enable_dual_language_var)
+            
+            # 定义状态更新函数
+            def update_dual_language_state(*args):
+                if self.lyric_fetch_method_var.get() == 0:  # 直接获取
+                    self.dual_language_checkbox.pack(side=tk.LEFT, padx=4, pady=2)
+                else:
+                    self.dual_language_checkbox.pack_forget()
+            
+            # 绑定状态变更
+            self.lyric_fetch_method_var.trace("w", update_dual_language_state)
+            
+            # 初始状态更新
+            update_dual_language_state()
+            
             # 添加自动保存功能
             self.enable_z_packaging_var.trace("w", lambda *args: self.save_v_settings())
             self.save_original_lrc_var.trace("w", lambda *args: self.save_v_settings())
+            self.lyric_fetch_method_var.trace("w", lambda *args: self.save_v_settings())
+            self.enable_dual_language_var.trace("w", lambda *args: self.save_v_settings())
         
         elif program_name == "C.py":
             # 创建子功能按钮区域
@@ -2082,12 +2458,6 @@ class MainGUI:
         
         # 初始化进程为None
         self.process = None
-        
-        # 高亮对应的功能按钮
-        for i, btn in enumerate(self.buttons):
-            if i < len(list(program_info.keys())) and list(program_info.keys())[i] == program_name:
-                self.highlight_button(btn)
-                break
     
     def browse_files(self):
         """打开文件选择对话框，支持选择单个文件"""
@@ -2112,7 +2482,7 @@ class MainGUI:
             current_program = None
             for i, btn in enumerate(self.buttons):
                 if btn.cget("style") == "Highlight.TButton":
-                    if i == 3:  # 字幕文件独立修改是第4个功能
+                    if i == 2:  # 字幕文件独立修改是第3个功能（因为注释掉了字幕字体打包替换）
                         current_program = "C.py"
                         break
             
@@ -2125,6 +2495,55 @@ class MainGUI:
                 # 自动执行所有子功能
                 self.run_all_sub_functions(file_path)
     
+    def vtt_to_srt(self):
+        """VVT转SRT功能"""
+        # 打开文件选择对话框，只选择VVT文件
+        file_path = filedialog.askopenfilename(
+            title="选择VVT文件",
+            filetypes=[("VVT文件", "*.vtt"), ("所有文件", "*.*")]
+        )
+        if file_path:
+            # 构建命令
+            import subprocess
+            import sys
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            v_path = os.path.join(current_dir, "V.py")
+            cmd = [sys.executable, v_path, "--vtt-to-srt", file_path]
+            
+            # 执行命令
+            try:
+                # 清空日志
+                self.output_text.delete(1.0, tk.END)
+                self.output_text.insert(tk.END, f"开始转换VVT文件为SRT格式...\n")
+                self.output_text.insert(tk.END, f"输入文件: {file_path}\n\n")
+                
+                # 执行命令
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True,
+                    encoding='utf-8',
+                    cwd=current_dir
+                )
+                
+                # 实时显示输出
+                for line in process.stdout:
+                    self.output_text.insert(tk.END, line)
+                    self.output_text.see(tk.END)
+                    self.right_frame.update_idletasks()
+                
+                # 等待命令执行完成
+                process.wait()
+                
+                # 显示完成信息
+                if process.returncode == 0:
+                    self.output_text.insert(tk.END, "\n转换完成！")
+                else:
+                    self.output_text.insert(tk.END, "\n转换失败！")
+            except Exception as e:
+                self.output_text.insert(tk.END, f"\n错误: {e}")
+
     def browse_folder(self):
         """打开文件夹选择对话框，支持选择文件夹"""
         # 打开文件夹选择对话框
@@ -2141,7 +2560,7 @@ class MainGUI:
             current_program = None
             for i, btn in enumerate(self.buttons):
                 if btn.cget("style") == "Highlight.TButton":
-                    if i == 3:  # 字幕文件独立修改是第4个功能
+                    if i == 2:  # 字幕文件独立修改是第3个功能（因为注释掉了字幕字体打包替换）
                         current_program = "C.py"
                         break
             
@@ -2378,34 +2797,71 @@ class MainGUI:
             read_thread = threading.Thread(target=read_output, daemon=True)
             read_thread.start()
             
+            # 在循环外定义一个变量，记录上一行是否是进度条
+            self.last_line_was_progress = False
+
             # 处理输出的循环
             while True:
-                # 检查进程是否为None（用户可能点击了停止按钮）
                 if self.process is None:
                     break
                 
-                # 检查进程是否已经结束且读取线程已完成
-                if self.process.poll() is not None and not read_thread.is_alive():
-                    # 处理队列中剩余的所有输出
-                    while not output_queue.empty():
-                        line = output_queue.get()
-                        if 'Progress: ' not in line and 'Extracting track' not in line:
-                            def update_gui_final(line=line):
-                                self.output_text.insert(tk.END, line)
-                                self.output_text.see(tk.END)
-                            self.root.after(0, update_gui_final)
+                if self.process.poll() is not None and output_queue.empty():
                     break
                 
-                # 处理队列中的输出
                 while not output_queue.empty():
                     line = output_queue.get()
-                    if 'Progress: ' not in line and 'Extracting track' not in line:
-                        def update_gui(line=line):
-                            self.output_text.insert(tk.END, line)
-                            self.output_text.see(tk.END)
-                        self.root.after(0, update_gui)
+                    
+                    # 定义一个内部函数来更新 GUI
+                    def update_gui_v2(text=line):
+                        # 进度条特征检测：包含百分比和垂直线，或者以 \r 开头
+                        is_progress = ('|' in text and '%' in text) or text.startswith('\r')
+                        
+                        if is_progress:
+                            # 清理掉文本中的回车符
+                            clean_text = text.replace('\r', '').replace('\n', '')
+                            
+                            # --- 新增：将秒数转换为 分:秒 格式 ---
+                            def format_seconds(match):
+                                try:
+                                    curr = float(match.group(1))
+                                    total = float(match.group(2))
+                                    curr_min, curr_sec = divmod(int(curr), 60)
+                                    total_min, total_sec = divmod(int(total), 60)
+                                    return f"{curr_min:02d}:{curr_sec:02d}/{total_min:02d}:{total_sec:02d}"
+                                except:
+                                    return match.group(0)
+
+                            # 匹配形如 169.65/169.65 的格式
+                            clean_text = re.sub(r'(\d+\.?\d*)/(\d+\.?\d*)', format_seconds, clean_text)
+                            # ------------------------------------
+
+                            if self.last_line_was_progress:
+                                # 【关键：覆盖逻辑】
+                                # 如果上一行也是进度条，删除最后一行（即旧进度条）
+                                # "end-1c" 是文档末尾，"end-1c linestart" 是最后一行的开始
+                                self.output_text.delete("end-2c linestart", "end-1c")
+                                self.output_text.insert(tk.END, clean_text)
+                            else:
+                                # 第一次出现进度条，直接换行插入
+                                if not self.output_text.get("end-2c", "end-1c") == "\n":
+                                    self.output_text.insert(tk.END, "\n")
+                                self.output_text.insert(tk.END, clean_text)
+                            
+                            self.last_line_was_progress = True
+                        else:
+                            # 普通日志文本
+                            if self.last_line_was_progress:
+                                # 如果从进度条转回普通文本，补一个换行
+                                self.output_text.insert(tk.END, "\n")
+                            
+                            self.output_text.insert(tk.END, text)
+                            self.last_line_was_progress = False
+                        
+                        self.output_text.see(tk.END)
+
+                    # 使用 after 确保在主线程更新 UI
+                    self.root.after(0, update_gui_v2)
                 
-                # 短暂休眠，避免CPU占用过高
                 time.sleep(0.01)
             
         except Exception as e:
@@ -3034,18 +3490,18 @@ class MainGUI:
                 elif i == 1:
                     current_program = "Z1.py"
                 elif i == 2:
-                    current_program = "D.py"
-                elif i == 3:
                     # 字幕文件独立修改是独立功能，不与C.py绑定
                     # 这里我们不设置current_program，因为它有自己的处理逻辑
                     # 但为了保持兼容性，我们可以返回而不执行任何操作
                     return
-                elif i == 4:
+                elif i == 3:
                     current_program = "M.py"
-                elif i == 5:
+                elif i == 4:
                     current_program = "x.py"
-                elif i == 6:
+                elif i == 5:
                     current_program = "V.py"
+                # 媒体格式转换和音频文件重命名现在使用嵌入式UI，不需要设置current_program
+                # 因为它们有自己的处理方法
                 break
         # 如果没有高亮按钮，默认使用第一个程序
         if not current_program:
@@ -3754,7 +4210,7 @@ class MainGUI:
         
         # 高亮对应的功能按钮
         for i, btn in enumerate(self.buttons):
-            if i == 3:  # 字幕文件独立修改是第四个大类
+            if i == 2:  # 字幕文件独立修改是第三个大类（因为注释掉了字幕字体打包替换）
                 self.highlight_button(btn)
                 break
 

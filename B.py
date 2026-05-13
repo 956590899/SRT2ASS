@@ -1,9 +1,24 @@
 import re
-import librosa
-import numpy as np
+import sys
+import subprocess
+
+# 自动安装缺失的依赖
+try:
+    import librosa
+except ImportError:
+    print("librosa 未安装，正在安装...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "librosa", "--no-cache-dir"])
+    import librosa
+
+try:
+    import numpy as np
+except ImportError:
+    print("numpy 未安装，正在安装...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "numpy", "--no-cache-dir"])
+    import numpy as np
+
 from pathlib import Path
 import argparse
-import sys
 
 # 修复 Windows 控制台编码问题
 if sys.platform == "win32":
@@ -48,7 +63,7 @@ def format_time_seconds_to_minutes(seconds):
 
 class SustainDetector:
     """拖长音检测器 - 独立模块"""
-    def __init__(self, stability_threshold=0.89, min_duration=SUSTAIN_MIN_DURATION):
+    def __init__(self, stability_threshold=0.95, min_duration=SUSTAIN_MIN_DURATION):
         # 移除 merge_threshold 参数，因为我们不再合并
         self.stability_threshold = stability_threshold
         self.min_duration = min_duration
@@ -63,11 +78,11 @@ class SustainDetector:
             audio_duration = len(y)/sr
             print(f"音频信息: 采样率={sr}Hz, 时长={format_time_seconds_to_minutes(audio_duration)}")
             
-            # 计算频谱图
+            # 计算频谱图 - 使用更小的hop_length提高时间分辨率
             print("正在计算频谱图...")
-            stft = librosa.stft(y, n_fft=2048, hop_length=512)
+            stft = librosa.stft(y, n_fft=2048, hop_length=256)
             spectrogram = librosa.amplitude_to_db(np.abs(stft), ref=np.max)
-            times = librosa.times_like(spectrogram, sr=sr, hop_length=512)
+            times = librosa.times_like(spectrogram, sr=sr, hop_length=256)
             
             # 计算频谱稳定性
             print("正在计算频谱稳定性...")
@@ -77,9 +92,15 @@ class SustainDetector:
             energy = np.sum(librosa.db_to_amplitude(spectrogram), axis=0)
             energy = energy / np.max(energy)
             
-            # 检测拖长音段
+            # 调试输出：显示数值分布
+            print(f"频谱稳定性统计: 最小={np.min(stability_scores):.3f}, 最大={np.max(stability_scores):.3f}, 平均={np.mean(stability_scores):.3f}")
+            print(f"能量统计: 最小={np.min(energy):.3f}, 最大={np.max(energy):.3f}, 平均={np.mean(energy):.3f}")
+            high_stability_count = np.sum(np.array(stability_scores) > 0.9)
+            print(f"稳定性>0.9的帧数: {high_stability_count}/{len(stability_scores)}")
+            
+            # 检测拖长音段（使用基频标准差过滤）
             print("正在检测拖长音段...")
-            sustain_segments = self._find_sustain_segments(stability_scores, energy, times)
+            sustain_segments = self._find_sustain_segments(stability_scores, energy, times, y, sr)
             
             # 显示检测结果
             if sustain_segments:
@@ -88,6 +109,7 @@ class SustainDetector:
                     start_formatted = format_time_seconds_to_minutes(seg['start'])
                     end_formatted = format_time_seconds_to_minutes(seg['end'])
                     print(f"  段{i}: {start_formatted} - {end_formatted} (持续 {seg['duration']:.2f}秒)")
+                    print(f"       稳定性: {seg['avg_stability']:.4f}, 能量: {seg['avg_energy']:.4f}, 基频标准差: {seg.get('pitch_std', 'N/A'):.2f}")
             else:
                 print("未检测到拖长音段")
             
@@ -117,27 +139,44 @@ class SustainDetector:
                 stability_scores.append(0)
         return [0] + stability_scores
     
-    def _find_sustain_segments(self, stability_scores, energy, times):
-        """查找拖长音段"""
+    def _compute_pitch_std(self, segment, sr):
+        """计算基频标准差"""
+        pyin_result = librosa.pyin(segment, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+        pitches = pyin_result[0]
+        return np.nanstd(pitches) if len(pitches) > 0 else float('inf')
+
+    def _find_sustain_segments(self, stability_scores, energy, times, y, sr):
+        """查找拖长音段（使用基频标准差过滤）"""
+        PITCH_STD_THRESHOLD = 12
         sustain_segments = []
         i = 0
         while i < len(stability_scores):
-            if stability_scores[i] > self.stability_threshold and energy[i] > 0.15:
+            if stability_scores[i] > self.stability_threshold and energy[i] > 0.20:
                 start_idx = i
                 while (i < len(stability_scores) and 
                        stability_scores[i] > self.stability_threshold and 
-                       energy[i] > 0.15):
+                       energy[i] > 0.20):
                     i += 1
                 end_idx = i - 1
                 duration = times[end_idx] - times[start_idx]
+                
                 if duration >= self.min_duration:
-                    sustain_segments.append({
-                        'start': times[start_idx],
-                        'end': times[end_idx],
-                        'duration': duration,
-                        'avg_stability': np.mean(stability_scores[start_idx:end_idx+1]),
-                        'avg_energy': np.mean(energy[start_idx:end_idx+1])
-                    })
+                    # 计算基频标准差进行过滤
+                    seg_start_idx = int(times[start_idx] * sr)
+                    seg_end_idx = int(times[end_idx] * sr)
+                    segment_audio = y[seg_start_idx:seg_end_idx]
+                    pitch_std = self._compute_pitch_std(segment_audio, sr)
+                    
+                    # 只有基频标准差小于阈值的才保留
+                    if pitch_std < PITCH_STD_THRESHOLD:
+                        sustain_segments.append({
+                            'start': times[start_idx],
+                            'end': times[end_idx],
+                            'duration': duration,
+                            'avg_stability': np.mean(stability_scores[start_idx:end_idx+1]),
+                            'avg_energy': np.mean(energy[start_idx:end_idx+1]),
+                            'pitch_std': pitch_std
+                        })
             else:
                 i += 1
         return sustain_segments
@@ -384,26 +423,12 @@ class KaraokeGenerator:
                             k_sequence = [adjusted_total_k]
                         else:
                             # 开启拖长音检测：正常逻辑
-                            # 记录当前字幕信息，便于调试
-                            print(f"\n处理字幕: 时间轴={start_time}->{end_time} (字幕秒数: {start_sec:.2f}->{end_sec:.2f})")
-                            print(f"  原歌词: {text}")
-                            
                             # 查找匹配的拖长音
                             matching_segments = self.find_matching_sustain(sustain_segments, start_sec, end_sec)
                             
                             # 计算总K值（每个K值单位=0.01秒）
                             total_k = int(total_duration * 100)
                             adjusted_total_k = max(10, total_k - 15)  # 基础K值减15，最小10
-                            
-                            # 记录匹配的拖长音段
-                            if matching_segments:
-                                print(f"  匹配到{len(matching_segments)}个拖长音段:")
-                                for i, seg in enumerate(matching_segments):
-                                    seg_start_formatted = format_time_seconds_to_minutes(seg['start'])
-                                    seg_end_formatted = format_time_seconds_to_minutes(seg['end'])
-                                    print(f"    段{i+1}: {seg_start_formatted}->{seg_end_formatted} (持续{seg['duration']:.2f}秒)")
-                            else:
-                                print(f"  未匹配到任何拖长音段")
                             
                             # 动态K值分配逻辑
                             selected_sustain = None
@@ -422,10 +447,10 @@ class KaraokeGenerator:
                                     # 判断是否为末尾延长音：
                                     # 1. 结束位置在60%之后 或
                                     # 2. 结束时间距离字幕结束不足SUSTAIN_END_TIME_DIFF秒
-                                    is_end_sustain = (seg_end_pos >= 0.6 or end_time_diff < SUSTAIN_END_TIME_DIFF) and seg['duration'] >= SUSTAIN_END_THRESHOLD
+                                    is_end_sustain = ENABLE_ENDING_SUSTAIN_DETECTION == 1 and (seg_end_pos >= 0.6 or end_time_diff < SUSTAIN_END_TIME_DIFF) and seg['duration'] >= SUSTAIN_END_THRESHOLD
                                     
                                     # 判断是否为开始延长音：拖长音开始时间与字幕开始时间误差在0.5秒内
-                                    is_start_sustain = start_time_diff <= 0.5 and seg['duration'] >= SUSTAIN_END_THRESHOLD
+                                    is_start_sustain = ENABLE_BEGINNING_SUSTAIN_DETECTION == 1 and start_time_diff <= 0.5 and seg['duration'] >= SUSTAIN_END_THRESHOLD
                                     
                                     if is_end_sustain:
                                         selected_sustain = seg
@@ -476,6 +501,12 @@ class KaraokeGenerator:
                                 is_long_sustain = selected_sustain['duration'] >= SUSTAIN_LONG_THRESHOLD
                                 
                                 if is_end_sustain or is_start_sustain or is_long_sustain:
+                                    # 计算拖长音在字幕时间轴中的起始位置比例（限制在0-1之间）
+                                    overlap_start = max(selected_sustain['start'], start_sec)
+                                    overlap_end = min(selected_sustain['end'], end_sec)
+                                    sustain_start_pos = max(0, min(1, (overlap_start - start_sec) / total_duration))
+                                    sustain_end_pos = max(0, min(1, (overlap_end - start_sec) / total_duration))
+                                    
                                     sustain_start_formatted = format_time_seconds_to_minutes(selected_sustain['start'])
                                     sustain_duration_formatted = format_time_seconds_to_minutes(selected_sustain['duration'])
                                     print(f"=== 延长音抉择日志 ===")
@@ -500,13 +531,7 @@ class KaraokeGenerator:
                                     
                                     # 动态计算K值，根据拖长音类型调整分配策略
                                     # 计算拖长音与字幕的实际重叠区域
-                                    overlap_start = max(selected_sustain['start'], start_sec)
-                                    overlap_end = min(selected_sustain['end'], end_sec)
                                     actual_overlap_duration = overlap_end - overlap_start
-                                    
-                                    # 计算拖长音在字幕时间轴中的起始位置比例（限制在0-1之间）
-                                    sustain_start_pos = max(0, min(1, (overlap_start - start_sec) / total_duration))
-                                    sustain_end_pos = max(0, min(1, (overlap_end - start_sec) / total_duration))
                                     
                                     # 根据实际重叠持续时间计算所需K值
                                     sustain_k_needed = int(actual_overlap_duration * 100 * 1.0)  # 使用实际重叠时间，不额外增加缓冲
@@ -554,40 +579,40 @@ class KaraokeGenerator:
                                     tail_k = adjusted_total_k - front_k
                                     
                                     # 根据拖长音类型分别检查K值和开关状态
-                                use_whole_effect = False
-                                if is_start_sustain:
-                                    # 检查句首延长音开关是否开启
-                                    if ENABLE_BEGINNING_SUSTAIN_DETECTION != 1:
-                                        print(f"  句首延长音检测已关闭，采用整段效果")
-                                        use_whole_effect = True
-                                    elif front_k < BEGINNING_SUSTAIN_MIN_K:
-                                        print(f"  检测到句首延长音K值小于{BEGINNING_SUSTAIN_MIN_K}: 前面={front_k}，采用整段效果")
-                                        use_whole_effect = True
-                                elif is_end_sustain:
-                                    # 检查句末延长音开关是否开启
-                                    if ENABLE_ENDING_SUSTAIN_DETECTION != 1:
-                                        print(f"  句末延长音检测已关闭，采用整段效果")
-                                        use_whole_effect = True
-                                    elif tail_k < ENDING_SUSTAIN_MIN_K:
-                                        print(f"  检测到句末延长音K值小于{ENDING_SUSTAIN_MIN_K}: 末尾={tail_k}，采用整段效果")
-                                        use_whole_effect = True
-                                else:
-                                    # 其他情况：检查任意K值是否小于最小阈值
-                                    min_k = min(BEGINNING_SUSTAIN_MIN_K, ENDING_SUSTAIN_MIN_K)
-                                    if front_k < min_k or tail_k < min_k:
-                                        print(f"  检测到K值小于{min_k}: 前面={front_k}, 末尾={tail_k}，采用整段效果")
-                                        use_whole_effect = True
-                                 
-                                if use_whole_effect:
-                                    k_sequence = [adjusted_total_k]
-                                else:
-                                    k_sequence = [front_k, tail_k]
-                                    
-                                    front_time = front_k/100
-                                    tail_time = tail_k/100
-                                    front_time_formatted = format_time_seconds_to_minutes(front_time)
-                                    tail_time_formatted = format_time_seconds_to_minutes(tail_time)
-                                    print(f"动态分配: 前面={front_k} ({front_time_formatted}), 末尾={tail_k} ({tail_time_formatted})")
+                                    use_whole_effect = False
+                                    if is_start_sustain:
+                                        # 检查句首延长音开关是否开启
+                                        if ENABLE_BEGINNING_SUSTAIN_DETECTION != 1:
+                                            print(f"  句首延长音检测已关闭，采用整段效果")
+                                            use_whole_effect = True
+                                        elif front_k < BEGINNING_SUSTAIN_MIN_K:
+                                            print(f"  检测到句首延长音K值小于{BEGINNING_SUSTAIN_MIN_K}: 前面={front_k}，采用整段效果")
+                                            use_whole_effect = True
+                                    elif is_end_sustain:
+                                        # 检查句末延长音开关是否开启
+                                        if ENABLE_ENDING_SUSTAIN_DETECTION != 1:
+                                            print(f"  句末延长音检测已关闭，采用整段效果")
+                                            use_whole_effect = True
+                                        elif tail_k < ENDING_SUSTAIN_MIN_K:
+                                            print(f"  检测到句末延长音K值小于{ENDING_SUSTAIN_MIN_K}: 末尾={tail_k}，采用整段效果")
+                                            use_whole_effect = True
+                                    else:
+                                        # 其他情况：检查任意K值是否小于最小阈值
+                                        min_k = min(BEGINNING_SUSTAIN_MIN_K, ENDING_SUSTAIN_MIN_K)
+                                        if front_k < min_k or tail_k < min_k:
+                                            print(f"  检测到K值小于{min_k}: 前面={front_k}, 末尾={tail_k}，采用整段效果")
+                                            use_whole_effect = True
+                                     
+                                    if use_whole_effect:
+                                        k_sequence = [adjusted_total_k]
+                                    else:
+                                        k_sequence = [front_k, tail_k]
+                                        
+                                        front_time = front_k/100
+                                        tail_time = tail_k/100
+                                        front_time_formatted = format_time_seconds_to_minutes(front_time)
+                                        tail_time_formatted = format_time_seconds_to_minutes(tail_time)
+                                        print(f"动态分配: 前面={front_k} ({front_time_formatted}), 末尾={tail_k} ({tail_time_formatted})")
                             else:
                                 # 非拖长音或持续时间不足0.8秒：使用整句效果
                                 k_sequence = [adjusted_total_k]

@@ -18,6 +18,43 @@ import re
 import shutil
 from pathlib import Path
 
+# ====== 字体配置 ======
+# 这里可以方便地修改字体配置
+FONT_CONFIG = {
+    "simplified_chinese": {
+        "font_name": "方正准圆简体", "font_file": "方正准圆简体.ttf",
+        "default_font_name": "Microsoft YaHei"
+    },
+    "japanese": {
+        "font_name": "方正准圆简体", "font_file": "方正准圆简体.ttf",
+        "default_font_name": "Microsoft YaHei"
+    },
+    "traditional_chinese": {
+        "font_name": "方正准圆简体", "font_file": "方正准圆简体.ttf",
+        "default_font_name": "Microsoft YaHei"
+    }
+}
+
+# 尝试从GUI配置中读取字体设置
+try:
+    import GUI
+    # 读取GUI中的字体设置
+    if hasattr(GUI, 'sc_font_var'):
+        FONT_CONFIG['simplified_chinese']['font_name'] = GUI.sc_font_var.get()
+        FONT_CONFIG['simplified_chinese']['font_file'] = f"{GUI.sc_font_var.get()}.ttf"
+    if hasattr(GUI, 'jt_font_var'):
+        FONT_CONFIG['japanese']['font_name'] = GUI.jt_font_var.get()
+        FONT_CONFIG['japanese']['font_file'] = f"{GUI.jt_font_var.get()}.ttf"
+        FONT_CONFIG['traditional_chinese']['font_name'] = GUI.jt_font_var.get()
+        FONT_CONFIG['traditional_chinese']['font_file'] = f"{GUI.jt_font_var.get()}.ttf"
+    if hasattr(GUI, 'system_font_var'):
+        FONT_CONFIG['simplified_chinese']['default_font_name'] = GUI.system_font_var.get()
+        FONT_CONFIG['japanese']['default_font_name'] = GUI.system_font_var.get()
+        FONT_CONFIG['traditional_chinese']['default_font_name'] = GUI.system_font_var.get()
+except Exception as e:
+    # 如果无法读取GUI配置，使用默认值
+    pass
+
 # ========== 配置参数 ==========
 # 多音轨多字幕默认属性:
 # 0: 保持原视频的默认音频和字幕设置
@@ -35,6 +72,17 @@ STEREO_TO_5_1 = 0  # 0或1
 # 2: 提词器效果，调用T.py处理字幕
 # -1: 全选，同时处理所有效果
 SUBTITLE_MODE = -1  # 0、1、2或-1（全选）
+
+# 字体替换开关:
+# 0: 关闭，保持原始字体
+# 1: 开启，替换为自定义字体
+ENABLE_FONT_REPLACEMENT = 1  # 0或1
+
+# 字体设置选项:
+# 0: 默认（不启用修改）
+# 1: 系统字体
+# 2: 自定义字体
+FONT_SETTING = 2  # 0、1或2
 # =============================
 
 class VideoReprocessor:
@@ -54,6 +102,12 @@ class VideoReprocessor:
         self.default_settings_mode = DEFAULT_SETTINGS_MODE
         self.stereo_to_5_1 = STEREO_TO_5_1
         self.subtitle_mode = SUBTITLE_MODE
+        self.enable_font_replacement = ENABLE_FONT_REPLACEMENT
+        self.font_setting = FONT_SETTING
+        # 根据字体设置选项自动决定是否使用字体附件
+        # 只有自定义字体模式下才使用字体附件
+        self.font_attachment = 1 if self.font_setting == 2 else 0
+        self.fonts_dir = Path(__file__).parent / "TTF"
     
     def detect_ffmpeg_path(self):
         """检测ffmpeg路径"""
@@ -617,6 +671,414 @@ class VideoReprocessor:
         }
         return language_names.get(language_code.lower(), f"语言{language_code}")
     
+    def detect_encoding(self, file_path):
+        """检测文件编码"""
+        try:
+            import chardet
+            with open(file_path, 'rb') as f:
+                raw_data = f.read()
+                result = chardet.detect(raw_data)
+                return result['encoding'] or 'utf-8'
+        except:
+            return 'utf-8'
+    
+    def contains_japanese_text(self, text):
+        """精确检测文本是否包含日文字符（仅平假名、片假名）"""
+        if not text:
+            return False
+        
+        # 精确的日文字符范围（只包含平假名和片假名）
+        japanese_ranges = [
+            (0x3040, 0x309F),  # 平假名 (Hiragana)
+            (0x30A0, 0x30FF),  # 片假名 (Katakana)
+            (0x31F0, 0x31FF),  # 片假名音标扩展
+            (0xFF66, 0xFF9F),  # 半角片假名
+        ]
+        
+        # 常用日语标点（这些单独出现时不应触发日语字体）
+        japanese_punctuation = {'・', '。', '、', '！', '？', '（', '）', '「', '」', '『', '』'}
+        
+        # 统计日文字符数量
+        japanese_count = 0
+        non_punctuation_japanese_count = 0
+        total_chars = 0
+        
+        for char in text:
+            total_chars += 1
+            code_point = ord(char)
+            is_japanese = False
+            for start, end in japanese_ranges:
+                if start <= code_point <= end:
+                    is_japanese = True
+                    break
+            
+            if is_japanese:
+                japanese_count += 1
+                # 检查是否为非标点日文字符
+                if char not in japanese_punctuation:
+                    non_punctuation_japanese_count += 1
+        
+        # 显示关键识别逻辑（无论是否满足阈值）
+        if japanese_count > 0:
+            print(f"      识别逻辑: 检测到 {japanese_count} 个日文字符，占比 {japanese_count/total_chars*100:.1f}%")
+            if non_punctuation_japanese_count > 0:
+                print(f"      其中非标点日文字符: {non_punctuation_japanese_count} 个")
+            else:
+                print(f"      全部为日文标点，采用简体字体")
+        
+        # 如果包含非标点日文字符，无论数量多少，都认为是日文
+        if non_punctuation_japanese_count > 0:
+            return True
+        
+        # 只有当日文字符占比超过10%时才认为是日文
+        if total_chars > 0 and japanese_count / total_chars > 0.1:
+            return True
+        
+        return False
+    
+    def contains_traditional_chinese_text(self, text):
+        """精确检测文本是否包含繁体中文"""
+        if not text:
+            return False
+        
+        # 繁体中文特有字符（一些在简体中不常用或写法不同的字）
+        traditional_chars = set('麼麼為為於於裡裡後後個個時體國學與麼麼')
+        
+        # 检查繁体特有字符
+        detected_traditional_chars = []
+        for char in text:
+            if char in traditional_chars:
+                detected_traditional_chars.append(char)
+        
+        # 显示关键识别逻辑（无论是否满足阈值）
+        if detected_traditional_chars:
+            print(f"      识别逻辑: 检测到 {len(detected_traditional_chars)} 个繁体特有字符")
+            print(f"      示例繁体字符: {', '.join(detected_traditional_chars[:3])}")
+            return True
+        
+        # 基于字符使用频率的简单检测
+        traditional_indicators = ['麼', '為', '於', '裡', '後', '個', '體', '國', '學', '與']
+        traditional_count = sum(1 for char in text if char in traditional_indicators)
+        
+        # 显示关键识别逻辑（无论是否满足阈值）
+        if traditional_count > 0:
+            print(f"      识别逻辑: 检测到 {traditional_count} 个繁体特征字符，占比 {traditional_count/len(text)*100:.1f}%")
+        
+        # 如果包含繁体特征字符，无论数量多少，都认为是繁体中文
+        if traditional_count > 0:
+            return True
+        
+        return False
+    
+    def detect_language_from_content(self, content):
+        """从字幕内容精确检测语言"""
+        if not content:
+            return 'chinese'  # 默认简体中文
+        
+        # 移除ASS标签和特殊字符
+        clean_content = re.sub(r'\{[^}]*\}', '', content)  # 移除ASS标签
+        clean_content = re.sub(r'[^\u4e00-\u9fff\u3040-\u30ff\u3100-\u312f\u31f0-\u31ff\uff00-\uffef]', '', clean_content)  # 只保留中日文字符
+        
+        if not clean_content:
+            return 'chinese'  # 如果没有检测到字符，默认简体中文
+        
+        # 检测是否包含日文字符（平假名、片假名）
+        if self.contains_japanese_text(clean_content):
+            return 'japanese'
+        
+        # 检测是否包含繁体中文
+        if self.contains_traditional_chinese_text(clean_content):
+            return 'traditional_chinese'
+        
+        # 如果只包含中文字符，则为简体中文
+        chinese_pattern = re.compile(r'[\u4e00-\u9fff]')
+        if chinese_pattern.search(clean_content):
+            return 'chinese'
+        
+        return 'chinese'  # 默认简体中文
+    
+    def get_language_type_from_content(self, subtitle_path):
+        """从字幕内容精确检测语言类型"""
+        try:
+            encoding = self.detect_encoding(subtitle_path)
+            with open(subtitle_path, 'r', encoding=encoding, errors='ignore') as f:
+                content = f.read(10000)  # 读取前10000个字符进行检测
+            
+            # 使用精确的语言检测
+            return self.detect_language_from_content(content)
+        except:
+            return 'chinese'
+    
+    def update_ass_styles(self, subtitle_path, language_type, enable_custom_font=True):
+        """更新ASS文件的样式（只修改字体名称，不修改字体大小）"""
+        try:
+            with open(subtitle_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # 根据语言类型选择字体配置
+            if language_type == 'japanese':
+                font_config = FONT_CONFIG['japanese']
+            elif language_type == 'traditional_chinese':
+                font_config = FONT_CONFIG['traditional_chinese']
+            else:
+                font_config = FONT_CONFIG['simplified_chinese']
+            
+            # 确定字体名称
+            if enable_custom_font:
+                font_name = font_config['font_name']
+            else:
+                font_name = font_config['default_font_name']
+            
+            print(f"  更新ASS字幕字体: {font_name}")
+            
+            # 修复关键BUG：正确识别和处理Format行和Style行
+            lines = content.split('\n')
+            updated_lines = []
+            
+            # 首先找到[V4+ Styles]部分
+            in_styles_section = False
+            
+            for line in lines:
+                stripped_line = line.strip()
+                
+                # 检测是否进入[V4+ Styles]部分
+                if stripped_line == '[V4+ Styles]':
+                    in_styles_section = True
+                    updated_lines.append(line)
+                    continue
+                    
+                # 检测是否离开[V4+ Styles]部分
+                elif stripped_line.startswith('[') and stripped_line.endswith(']') and stripped_line != '[V4+ Styles]':
+                    in_styles_section = False
+                
+                # 在[V4+ Styles]部分内，只处理Style行，不处理Format行
+                if in_styles_section and stripped_line.startswith('Style:'):
+                    # 这是样式行，分割字段
+                    parts = stripped_line.split(',')
+                    if len(parts) >= 3:
+                        # 第一个字段是 "Style: Default" 或 "Style: 样式名"
+                        # 第二个字段是字体名（索引1）
+                        # 第三个字段是字体大小（索引2）
+                        
+                        # 替换字体名（第二个字段）
+                        old_font = parts[1]
+                        parts[1] = font_name
+                        
+                        # 重新组合行，保持原始缩进
+                        if line.startswith(' '):
+                            indent_len = len(line) - len(line.lstrip())
+                            indent = line[:indent_len]
+                            updated_line = indent + ','.join(parts)
+                        else:
+                            updated_line = ','.join(parts)
+                            
+                        updated_lines.append(updated_line)
+                        continue
+                
+                # 其他行（包括Format行）保持不变
+                updated_lines.append(line)
+        
+            # 重新组合内容
+            updated_content = '\n'.join(updated_lines)
+            
+            # 验证更新是否正确
+            style_lines = [line for line in updated_content.split('\n') if line.strip().startswith('Style:')]
+            font_updated_count = 0
+            for style_line in style_lines:
+                parts = style_line.strip().split(',')
+                if len(parts) >= 2 and parts[1] == font_name:
+                    font_updated_count += 1
+            
+            if font_updated_count == len(style_lines) and len(style_lines) > 0:
+                print(f"  成功更新 {font_updated_count} 个样式行的字体为: {font_name}")
+            else:
+                print(f"  字体更新可能失败，检查格式是否正确")
+                # 调试输出前几行
+                print(f"  前5行内容:")
+                for i, line in enumerate(updated_content.split('\n')[:5]):
+                    print(f"    行{i+1}: {line}")
+                return content
+            
+            # 写回文件
+            with open(subtitle_path, 'w', encoding='utf-8') as f:
+                f.write(updated_content)
+            
+            return updated_content
+            
+        except Exception as e:
+            print(f"更新ASS样式失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return content
+    
+    def get_font_file(self, language_type):
+        """根据语言类型获取字体文件路径"""
+        if language_type == 'japanese':
+            font_config = FONT_CONFIG['japanese']
+            font_file_name = font_config['font_file']
+        elif language_type == 'traditional_chinese':
+            font_config = FONT_CONFIG['traditional_chinese']
+            font_file_name = font_config['font_file']
+        else:
+            font_config = FONT_CONFIG['simplified_chinese']
+            font_file_name = font_config['font_file']
+        
+        # 如果字体文件名为空，则不添加字体
+        if not font_file_name:
+            return None
+        
+        font_file = self.fonts_dir / font_file_name
+        
+        if font_file.exists():
+            return font_file
+        else:
+            print(f"提示: 字体文件不存在或未配置: {font_file}")
+            return None
+    
+    def process_subtitle_fonts(self, subtitle_tracks, enable_custom_font=True):
+        """处理字幕字体"""
+        if not enable_custom_font:
+            print("\n禁用自定义字体模式，使用系统默认字体...")
+            return subtitle_tracks, []
+        
+        print("\n启用个性化字体模式...")
+        
+        processed_tracks = []
+        font_files = set()
+        
+        for track in subtitle_tracks:
+            subtitle_path = Path(track['path'])
+            
+            # 如果不是ASS格式，先转换
+            if subtitle_path.suffix.lower() != '.ass':
+                print(f"  转换字幕格式: {subtitle_path.name} -> ASS")
+                try:
+                    converted_path = subtitle_path.with_suffix('.ass')
+                    # 简单转换为ASS格式
+                    encoding = self.detect_encoding(subtitle_path)
+                    with open(subtitle_path, 'r', encoding=encoding, errors='ignore') as f:
+                        content = f.read()
+                    
+                    # 生成简单的ASS头部
+                    language_type = self.get_language_type_from_content(subtitle_path)
+                    if language_type == 'japanese':
+                        font_config = FONT_CONFIG['japanese']
+                        font_name = font_config['font_name']
+                    elif language_type == 'traditional_chinese':
+                        font_config = FONT_CONFIG['traditional_chinese']
+                        font_name = font_config['font_name']
+                    else:
+                        font_config = FONT_CONFIG['simplified_chinese']
+                        font_name = font_config['font_name']
+                    
+                    ass_header = f"""[Script Info]
+; Generated by VideoReprocessor
+Title:
+ScriptType: v4.00+
+Collisions: Normal
+PlayResX: 1920
+PlayResY: 1080
+Timer: 100.0000
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,{font_name},50,&H00FFFFFF,&H00000000,&H00804000,&H00000000,-1,0,0,0,100,100,0,0,1,2,1,2,5,5,2,134
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+                    
+                    # 简单转换SRT到ASS格式
+                    ass_events = []
+                    lines = content.split('\n')
+                    i = 0
+                    while i < len(lines):
+                        line = lines[i].strip()
+                        if line.isdigit():
+                            i += 1
+                            if i < len(lines) and '--> ' in lines[i]:
+                                time_line = lines[i].strip()
+                                i += 1
+                                text_lines = []
+                                while i < len(lines) and lines[i].strip():
+                                    text_lines.append(lines[i].strip())
+                                    i += 1
+                                if text_lines:
+                                    # 转换时间格式
+                                    time_parts = time_line.split(' --> ')
+                                    if len(time_parts) == 2:
+                                        start_time = time_parts[0].replace(',', '.')
+                                        end_time = time_parts[1].replace(',', '.')
+                                        # 转换为ASS时间格式
+                                        def srt_to_ass_time(srt_time):
+                                            parts = srt_time.split(':')
+                                            if len(parts) == 3:
+                                                hours = int(parts[0])
+                                                minutes = int(parts[1])
+                                                seconds_parts = parts[2].split('.')
+                                                seconds = int(seconds_parts[0])
+                                                milliseconds = seconds_parts[1] if len(seconds_parts) > 1 else "00"
+                                                if len(milliseconds) > 2:
+                                                    milliseconds = milliseconds[:2]
+                                                elif len(milliseconds) == 1:
+                                                    milliseconds = milliseconds + "0"
+                                                return f"{hours}:{minutes:02d}:{seconds:02d}.{milliseconds}"
+                                            return srt_time
+                                        start_time_ass = srt_to_ass_time(start_time)
+                                        end_time_ass = srt_to_ass_time(end_time)
+                                        text = '\\N'.join(text_lines)
+                                        ass_event = f"Dialogue: 0,{start_time_ass},{end_time_ass},Default,,0,0,0,,{text}"
+                                        ass_events.append(ass_event)
+                        else:
+                            i += 1
+                    
+                    # 写入ASS文件
+                    with open(converted_path, 'w', encoding='utf-8') as f:
+                        f.write(ass_header)
+                        f.write('\n'.join(ass_events))
+                    
+                    track['path'] = str(converted_path)
+                    subtitle_path = converted_path
+                except Exception as e:
+                    print(f"  转换失败: {e}")
+                    continue
+            
+            # 精确检测语言类型（根据实际内容）
+            language_type = self.get_language_type_from_content(subtitle_path)
+            
+            # 语言名称显示
+            if language_type == 'japanese':
+                lang_name = "日文"
+            elif language_type == 'traditional_chinese':
+                lang_name = "繁体中文"
+            else:
+                lang_name = "简体中文"
+                
+            print(f"  检测字幕 {subtitle_path.name}: {lang_name} (基于内容精确分析)")
+            
+            # 更新ASS样式（只修改字体名称，不修改大小）
+            self.update_ass_styles(subtitle_path, language_type, enable_custom_font)
+            print(f"  更新{lang_name}样式成功（只修改字体名称）")
+            
+            # 获取字体文件（可能为空）
+            font_file = self.get_font_file(language_type)
+            if font_file:
+                font_files.add(font_file)
+                print(f"  使用字体文件: {font_file.name}")
+            else:
+                print(f"  提示: 未配置字体文件或字体文件不存在，仅替换字体名称")
+            
+            processed_tracks.append(track)
+        
+        if font_files:
+            print(f"  总计添加 {len(font_files)} 个字体文件")
+        else:
+            print(f"  提示: 无字体文件添加，仅替换ASS字体名称")
+        
+        return processed_tracks, list(font_files)
+    
     def process_with_k_py(self, subtitle_path):
         """使用k.py处理字幕文件"""
         if not self.karaoke_processor_path.exists():
@@ -778,7 +1240,7 @@ class VideoReprocessor:
             print(f"调用T.py失败: {e}")
             return None
     
-    def rebuild_mkv_final(self, video_path, subtitle_tracks, audio_tracks_info, output_path=None):
+    def rebuild_mkv_final(self, video_path, subtitle_tracks, audio_tracks_info, output_path=None, font_files=None):
         """使用mkvmerge重新打包最终MKV文件"""
         if not self.check_mkvtoolnix_available():
             print("mkvmerge不可用，无法重新打包")
@@ -797,6 +1259,12 @@ class VideoReprocessor:
             
             # 添加视频文件（移除原字幕和原始音频轨道）
             cmd.extend(['--no-subtitles', '--no-audio'])
+            
+            # 根据字体设置选项决定是否排除原视频的字体附件
+            # 只有在默认模式下才保留原视频的字体附件
+            if self.font_setting != 0:  # 系统字体或自定义字体模式
+                cmd.append('--no-attachments')
+                print("排除原视频的字体附件")
             
             # 添加视频文件
             cmd.append(str(video_path))
@@ -865,7 +1333,16 @@ class VideoReprocessor:
                 else:
                     print(f"× 跳过字幕轨道{original_id}: 字幕文件不存在")
             
-            # 注意：已移除添加字体文件的代码，不再添加字体附件
+            # 添加字体文件（如果存在）
+            if font_files and self.font_attachment:
+                print("\n添加字体文件:")
+                for font_file in font_files:
+                    if font_file and font_file.exists():
+                        cmd.extend(['--attachment-mime-type', 'application/x-truetype-font'])
+                        cmd.extend(['--attach-file', str(font_file)])
+                        print(f"  [OK] {font_file.name}")
+                    else:
+                        print(f"  [×] 字体文件不存在: {font_file}")
             
             # 执行mkvmerge命令
             result = subprocess.run(
@@ -1131,6 +1608,7 @@ class VideoReprocessor:
             processed_subtitle_tracks = []
             subtitle_tracks = media_info.get('subtitle_tracks', [])
             subtitle_processed = False
+            font_files = []
             
             # 判断是否需要处理字幕：subtitle_mode>0 或 subtitle_mode=='A' 或 (subtitle_mode==0且有ASS相关标签)需要还原
             subtitle_mode_needs_processing = False
@@ -1575,7 +2053,7 @@ class VideoReprocessor:
                                 'is_processed': False
                             })
                     else:
-                        print(f"  × 提取字幕轨道{track_id}失败")
+                        print(f"× 提取字幕轨道{track_id}失败")
             else:
                 # 不处理字幕，直接使用原始字幕轨道信息
                 print(f"字幕处理模式已关闭，保留原始字幕轨道")
@@ -1599,6 +2077,12 @@ class VideoReprocessor:
                         print(f"OK 提取字幕轨道{track_id}用于重新打包")
                     else:
                         print(f"× 提取字幕轨道{track_id}失败")
+            
+            # 处理字体替换
+            if self.enable_font_replacement and processed_subtitle_tracks:
+                print("\n步骤4: 处理字体替换")
+                print("-" * 30)
+                processed_subtitle_tracks, font_files = self.process_subtitle_fonts(processed_subtitle_tracks, enable_custom_font=self.enable_font_replacement)
             
             # 检查是否有任何实际修改
             any_modifications = audio_processed or subtitle_processed
@@ -1655,7 +2139,8 @@ class VideoReprocessor:
                 video_path=video_path,
                 subtitle_tracks=processed_subtitle_tracks,
                 audio_tracks_info=processed_audio_tracks,
-                output_path=output_path
+                output_path=output_path,
+                font_files=font_files
             )
             
             if mkv_result:

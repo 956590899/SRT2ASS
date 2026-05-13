@@ -26,7 +26,7 @@ from pathlib import Path
 # === 输出设置 ===
 ASK_OUTPUT_DIR = 0                # 0=使用默认目录，1=每次询问输出目录
 OUTPUT_DIR_FILTER_MARKER = ' (ASS_1)'  # 目录模式下过滤包含此标记的文件
-OUTPUT_REPLACE_MARKERS = [' (SSA)', ' (SRT)']  # 输出时替换这些标记
+OUTPUT_REPLACE_MARKERS = [' (SSA)', ' (SRT)', '(SSA)', '(SRT)']  # 输出时替换这些标记
 
 # === 字幕效果设置 ===
 # 真实卡拉OK效果设置：
@@ -86,14 +86,31 @@ class VoiceSeparator:
             return False
 
     def extract_audio_from_video(self, video_path, output_audio_path):
+        """使用FFmpeg提取音频"""
+        return self.extract_audio_with_ffmpeg(video_path, output_audio_path)
+    
+    def extract_audio_with_ffmpeg(self, video_path, output_audio_path):
+        """使用FFmpeg提取音频"""
         try:
-            import moviepy.editor as mp
-            video = mp.VideoFileClip(video_path)
-            video.audio.write_audiofile(output_audio_path, verbose=False, logger=None)
-            video.close()
-            return True
+            import subprocess
+            import sys
+            cmd = [
+                'ffmpeg', '-i', str(video_path),
+                '-ac', '2', '-ar', '44100',
+                '-acodec', 'pcm_s16le',
+                '-y', str(output_audio_path)
+            ]
+            # 隐藏FFmpeg输出，使用UTF-8编码
+            creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=300, creationflags=creationflags)
+            if result.returncode == 0:
+                print(f"  ✓ FFmpeg提取音频成功: {output_audio_path}")
+                return True
+            else:
+                print(f"  ✗ FFmpeg提取失败: {result.stderr}")
+                return False
         except Exception as e:
-            print(f"视频音频提取失败: {e}")
+            print(f"  ✗ FFmpeg提取异常: {e}")
             return False
 
     def find_separated_files(self, separation_dir):
@@ -209,14 +226,61 @@ class MainProcessor:
         current_dir = Path(__file__).parent
         module_path = current_dir / module_name
         if module_path.exists():
-            return module_path
+            return str(module_path)
         return module_name
+    
+    def extract_audio_with_ffmpeg(self, video_path, output_audio_path):
+        """使用FFmpeg提取音频"""
+        try:
+            import subprocess
+            import sys
+            cmd = [
+                self.ffmpeg_path, '-i', str(video_path),
+                '-ac', '2', '-ar', '44100',
+                '-acodec', 'pcm_s16le',
+                '-y', str(output_audio_path)
+            ]
+            # 隐藏FFmpeg输出，使用UTF-8编码
+            creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=300, creationflags=creationflags)
+            if result.returncode == 0:
+                print(f"  ✓ FFmpeg提取音频成功: {output_audio_path}")
+                return True
+            else:
+                print(f"  ✗ FFmpeg提取失败: {result.stderr}")
+                return False
+        except Exception as e:
+            print(f"  ✗ FFmpeg提取异常: {e}")
+            return False
 
     def setup_cache(self, output_dir=None):
+        import datetime
         temp_dir = tempfile.gettempdir()
-        self.cache_dir = Path(temp_dir) / "srt2ass_temp_cache"
+        self.cache_dir = Path(temp_dir) / "srt2ass"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.cache_dir = self.cache_dir / f"cache_{timestamp}"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         print(f"缓存目录: {self.cache_dir}")
+        self._cleanup_old_cache_files()
+
+    def _cleanup_old_cache_files(self):
+        """清理旧的缓存文件，防止残留文件影响后续处理"""
+        if not self.cache_dir or not self.cache_dir.exists():
+            self.cache_dir = Path(tempfile.gettempdir()) / "srt2ass_temp_cache"
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            return
+        try:
+            for item in self.cache_dir.iterdir():
+                try:
+                    if item.is_file():
+                        item.unlink()
+                    elif item.is_dir():
+                        shutil.rmtree(item)
+                except Exception as e:
+                    pass
+        except Exception as e:
+            pass
 
     def cleanup_cache(self):
         if self.cache_dir and self.cache_dir.exists():
@@ -607,21 +671,27 @@ class MainProcessor:
         stem = input_path.stem
         
         # 根据real_karaoke_effect确定目标标记
-        if real_karaoke_effect == 'A':  # 全选模式
+        if real_karaoke_effect == 'A' or real_karaoke_effect == -1 or str(real_karaoke_effect) == '-1':  # 全选模式
             # 全选模式：使用 (ASS) 标记
             target_marker = ' (ASS)'
-            # 原文件带(ASS) 标签 将(ASS) 改成(ASS)
-            if ' (ASS)' in stem:
-                new_stem = stem.replace(' (ASS)', target_marker)
-            else:
+            # 替换所有标记 (SRT) 和 (SSA) 为 (ASS)
+            new_stem = stem
+            for replace_marker in OUTPUT_REPLACE_MARKERS:
+                if replace_marker in new_stem:
+                    new_stem = new_stem.replace(replace_marker, target_marker)
+                    break
+            if new_stem == stem:
                 new_stem = stem + target_marker
         elif real_karaoke_effect == 1 or real_karaoke_effect == 2 or str(real_karaoke_effect) in ['1', '2']:  # KTV效果或提词器效果
             # 非默认效果：使用 (ASS_1) 标记
             target_marker = ' (ASS_1)'
-            # 原文件带(ASS) 标签 将(ASS) 改成(ASS_1)
-            if ' (ASS)' in stem:
-                new_stem = stem.replace(' (ASS)', target_marker)
-            else:
+            # 替换所有标记 (SRT) 和 (SSA) 为 (ASS_1)
+            new_stem = stem
+            for replace_marker in OUTPUT_REPLACE_MARKERS:
+                if replace_marker in new_stem:
+                    new_stem = new_stem.replace(replace_marker, target_marker)
+                    break
+            if new_stem == stem:
                 new_stem = stem + target_marker
         else:  # 默认效果
             if karaoke_mode:
@@ -659,21 +729,27 @@ class MainProcessor:
         stem = input_path.stem
         
         # 根据real_karaoke_effect确定目标标记
-        if real_karaoke_effect == 'A':  # 全选模式
+        if real_karaoke_effect == 'A' or real_karaoke_effect == -1 or str(real_karaoke_effect) == '-1':  # 全选模式
             # 全选模式：使用 (ASS) 标记
             target_marker = ' (ASS)'
-            # 原文件带(ASS) 标签 将(ASS) 改成(ASS)
-            if ' (ASS)' in stem:
-                new_stem = stem.replace(' (ASS)', target_marker)
-            else:
+            # 替换所有标记 (SRT) 和 (SSA) 为 (ASS)
+            new_stem = stem
+            for replace_marker in OUTPUT_REPLACE_MARKERS:
+                if replace_marker in new_stem:
+                    new_stem = new_stem.replace(replace_marker, target_marker)
+                    break
+            if new_stem == stem:
                 new_stem = stem + target_marker
         elif real_karaoke_effect == 1 or real_karaoke_effect == 2 or str(real_karaoke_effect) in ['1', '2']:  # KTV效果或提词器效果
             # 非默认效果：使用 (ASS_1) 标记
             target_marker = ' (ASS_1)'
-            # 原文件带(ASS) 标签 将(ASS) 改成(ASS_1)
-            if ' (ASS)' in stem:
-                new_stem = stem.replace(' (ASS)', target_marker)
-            else:
+            # 替换所有标记 (SRT) 和 (SSA) 为 (ASS_1)
+            new_stem = stem
+            for replace_marker in OUTPUT_REPLACE_MARKERS:
+                if replace_marker in new_stem:
+                    new_stem = new_stem.replace(replace_marker, target_marker)
+                    break
+            if new_stem == stem:
                 new_stem = stem + target_marker
         else:  # 默认效果
             if karaoke_mode:
@@ -916,6 +992,28 @@ class MainProcessor:
                 print(f"× 提取字幕轨道 {track_id} 失败")
         return extracted_subtitles
 
+    def _validate_audio_file(self, audio_path, min_size=1000):
+        """验证音频文件是否有效"""
+        audio_path = Path(audio_path)
+        if not audio_path.exists():
+            return False, "文件不存在"
+        if audio_path.stat().st_size < min_size:
+            return False, f"文件大小太小 ({audio_path.stat().st_size} bytes)"
+        try:
+            import struct
+            with open(audio_path, 'rb') as f:
+                header = f.read(12)
+                if len(header) < 12:
+                    return False, "文件太短，无法读取头部"
+                if header[0:4] == b'RIFF' and header[8:12] == b'WAVE':
+                    return True, "WAV格式有效"
+                elif header[0:4] in [b'\xff\xfb', b'\xff\xf3', b'\ff\xf2', b'ID3', b'\x00\x00']:
+                    return True, "MP3/其他音频格式有效"
+                else:
+                    return True, "文件存在且有内容"
+        except Exception as e:
+            return False, f"验证失败: {e}"
+
     def extract_audio_for_calibration(self, video_path, use_vocal_separation=True):
         video_path = Path(video_path)
         if use_vocal_separation and self.voice_separator.demucs_available:
@@ -923,15 +1021,34 @@ class MainProcessor:
             print("启用人声分离功能...")
             try:
                 if output_audio_path.exists():
-                    output_audio_path.unlink()
+                    try:
+                        output_audio_path.unlink()
+                    except:
+                        pass
                 temp_audio = self.cache_dir / "temp_audio.wav"
-                import moviepy.editor as mp
-                video = mp.VideoFileClip(str(video_path))
-                video.audio.write_audiofile(str(temp_audio), verbose=False, logger=None)
-                video.close()
+
+                if not self.extract_audio_with_ffmpeg(video_path, temp_audio):
+                    print("FFmpeg提取失败，使用原始音频")
+                    return self.extract_audio_for_calibration(video_path, False)
+
+                is_valid, msg = self._validate_audio_file(temp_audio)
+                if not is_valid:
+                    print(f"临时音频文件无效: {msg}，使用原始音频")
+                    return self.extract_audio_for_calibration(video_path, False)
+
                 vocal_audio = self.voice_separator.separate_voice(temp_audio, output_audio_path)
+
                 if temp_audio.exists():
-                    temp_audio.unlink()
+                    try:
+                        temp_audio.unlink()
+                    except:
+                        pass
+
+                is_valid, msg = self._validate_audio_file(output_audio_path)
+                if not is_valid:
+                    print(f"人声音频文件无效: {msg}，使用原始音频")
+                    return self.extract_audio_for_calibration(video_path, False)
+
                 print(f"提取人声音频: {output_audio_path}")
                 return output_audio_path
             except Exception as e:
@@ -941,11 +1058,20 @@ class MainProcessor:
             output_audio_path = self.cache_dir / f"{video_path.stem}_calibration.wav"
             try:
                 if output_audio_path.exists():
-                    output_audio_path.unlink()
-                import moviepy.editor as mp
-                video = mp.VideoFileClip(str(video_path))
-                video.audio.write_audiofile(str(output_audio_path), verbose=False, logger=None)
-                video.close()
+                    try:
+                        output_audio_path.unlink()
+                    except:
+                        pass
+
+                if not self.extract_audio_with_ffmpeg(video_path, output_audio_path):
+                    print("FFmpeg提取失败")
+                    return None
+
+                is_valid, msg = self._validate_audio_file(output_audio_path)
+                if not is_valid:
+                    print(f"音频文件无效: {msg}")
+                    return None
+
                 print(f"提取校准用音频: {output_audio_path}")
                 return output_audio_path
             except Exception as e:
@@ -1040,14 +1166,17 @@ class MainProcessor:
         print("-" * 30)
         calibrated_subtitle_path = self.cache_dir / f"calibrated_{subtitle_path.stem}.ass"
         if calibrated_subtitle_path.exists():
-            calibrated_subtitle_path.unlink()
-        # 当禁用卡拉OK效果时，移除卡拉OK标签
+            try:
+                calibrated_subtitle_path.unlink()
+            except:
+                pass
+        if not subtitle_path.exists():
+            raise FileNotFoundError(f"字幕文件不存在: {subtitle_path}，无法继续处理")
         calibrated_subtitle = self.call_subtitle_calibrator(
             calibration_audio, subtitle_path, calibrated_subtitle_path, not karaoke_effect
         )
         if not calibrated_subtitle:
-            print("字幕校准失败，使用原始字幕")
-            calibrated_subtitle = subtitle_path
+            raise RuntimeError("字幕校准失败，无法继续处理")
         print("\n步骤3: 卡拉OK转换")
         print("-" * 30)
         # 处理卡拉OK转换
@@ -1258,14 +1387,18 @@ class MainProcessor:
             print(f"  3.1 字幕校准")
             calibrated_subtitle_path = self.cache_dir / f"calibrated_{language}_{track_id}.ass"
             if calibrated_subtitle_path.exists():
-                calibrated_subtitle_path.unlink()
-            # 当禁用卡拉OK效果时，移除卡拉OK标签
+                try:
+                    calibrated_subtitle_path.unlink()
+                except:
+                    pass
+            subtitle_file_path = track_info.get('path')
+            if not subtitle_file_path or not Path(subtitle_file_path).exists():
+                raise FileNotFoundError(f"字幕文件不存在: {subtitle_file_path}，无法继续处理")
             calibrated_subtitle = self.call_subtitle_calibrator(
-                calibration_audio, track_info['path'], calibrated_subtitle_path, not karaoke_effect
+                calibration_audio, subtitle_file_path, calibrated_subtitle_path, not karaoke_effect
             )
             if not calibrated_subtitle:
-                print(f"    {lang_name}字幕校准失败，使用原始字幕")
-                calibrated_subtitle = track_info['path']
+                raise RuntimeError(f"{lang_name}字幕校准失败，无法继续处理")
             print(f"  3.2 卡拉OK转换")
             if karaoke_effect:
                 if str(real_karaoke_effect) == 'A':  # 全选模式，生成所有效果
@@ -1581,8 +1714,12 @@ class MainProcessor:
         print("-" * 30)
         calibrated_subtitle_path = self.cache_dir / f"calibrated_{subtitle_path.stem}.ass"
         if calibrated_subtitle_path.exists():
-            calibrated_subtitle_path.unlink()
-        # 当禁用卡拉OK效果时，移除卡拉OK标签
+            try:
+                calibrated_subtitle_path.unlink()
+            except:
+                pass
+        if not subtitle_path.exists():
+            raise FileNotFoundError(f"字幕文件不存在: {subtitle_path}，无法继续处理")
         calibrated_subtitle = self.call_subtitle_calibrator(
             calibration_audio, subtitle_path, calibrated_subtitle_path, not karaoke_effect
         )
@@ -1850,7 +1987,7 @@ class MainProcessor:
             t_output_path = self.cache_dir / f"t_prompter_{Path(subtitle_path).stem}.ass"
             
             # 检查T.py文件是否存在
-            if not self.prompter_converter_path.exists():
+            if not Path(self.prompter_converter_path).exists():
                 print(f"❌ T.py文件不存在: {self.prompter_converter_path}")
                 print("请确保T.py文件与z.py在同一目录下")
                 return None
@@ -1939,6 +2076,14 @@ class MainProcessor:
             print("调用卡拉OK转换子程序...")
             returncode, stdout, stderr = self.run_command_safe(cmd, timeout=120)
             if returncode == 0:
+                if stdout:
+                    for line in stdout.split('\n'):
+                        if '检测到' in line and '个独立的拖长音段' in line:
+                            print(line.strip())
+                        elif line.strip().startswith('段') and '-' in line:
+                            print(line.strip())
+                        elif '稳定性:' in line or '能量:' in line or '基频标准差:' in line:
+                            print(line.strip())
                 print("卡拉OK转换完成")
                 if output_path and Path(output_path).exists():
                     return output_path
@@ -2278,21 +2423,27 @@ class SimpleSubtitleConverter:
         stem = input_path.stem
         
         # 根据real_karaoke_effect确定目标标记
-        if real_karaoke_effect == 'A':  # 全选模式
+        if real_karaoke_effect == 'A' or real_karaoke_effect == -1 or str(real_karaoke_effect) == '-1':  # 全选模式
             # 全选模式：使用 (ASS) 标记
             target_marker = ' (ASS)'
-            # 原文件带(ASS) 标签 将(ASS) 改成(ASS)
-            if ' (ASS)' in stem:
-                new_stem = stem.replace(' (ASS)', target_marker)
-            else:
+            # 替换所有标记 (SRT) 和 (SSA) 为 (ASS)
+            new_stem = stem
+            for replace_marker in OUTPUT_REPLACE_MARKERS:
+                if replace_marker in new_stem:
+                    new_stem = new_stem.replace(replace_marker, target_marker)
+                    break
+            if new_stem == stem:
                 new_stem = stem + target_marker
         elif real_karaoke_effect == 1 or real_karaoke_effect == 2 or str(real_karaoke_effect) in ['1', '2']:  # KTV效果或提词器效果
             # 非默认效果：使用 (ASS_1) 标记
             target_marker = ' (ASS_1)'
-            # 原文件带(ASS) 标签 将(ASS) 改成(ASS_1)
-            if ' (ASS)' in stem:
-                new_stem = stem.replace(' (ASS)', target_marker)
-            else:
+            # 替换所有标记 (SRT) 和 (SSA) 为 (ASS_1)
+            new_stem = stem
+            for replace_marker in OUTPUT_REPLACE_MARKERS:
+                if replace_marker in new_stem:
+                    new_stem = new_stem.replace(replace_marker, target_marker)
+                    break
+            if new_stem == stem:
                 new_stem = stem + target_marker
         else:  # 默认效果
             if karaoke_mode:

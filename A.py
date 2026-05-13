@@ -1,8 +1,29 @@
 import sys
-import numpy as np
-import librosa
+import subprocess
+
+# 自动安装缺失的依赖
+try:
+    import numpy as np
+except ImportError:
+    print("numpy 未安装，正在安装...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "numpy", "--no-cache-dir"])
+    import numpy as np
+
+try:
+    import librosa
+except ImportError:
+    print("librosa 未安装，正在安装...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "librosa", "--no-cache-dir"])
+    import librosa
+
+try:
+    import chardet
+except ImportError:
+    print("chardet 未安装，正在安装...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "chardet", "--no-cache-dir"])
+    import chardet
+
 from pathlib import Path
-import chardet
 import re
 import io
 
@@ -1439,15 +1460,51 @@ class SubtitleCalibrator:
                 i += 1
                 continue
             
-            if line.isdigit():
+            # 检查是否是时间行（可能前面没有数字序号）
+            if '-->' in line:
+                time_line = line
+                start_time, end_time = self._parse_srt_time(time_line)
+                text_lines = []
+                j = i + 1
+                while j < len(lines):
+                    next_line = lines[j].strip()
+                    if not next_line:
+                        break
+                    # 检查下一行是否是新的时间行
+                    if '-->' in next_line:
+                        break
+                    text_lines.append(next_line)
+                    j += 1
+                
+                # 根据merge_multiline参数决定合并方式
+                if text_lines:
+                    if self.merge_multiline == 1:
+                        # 合并多行：用空格连接
+                        combined_text = ' '.join(text_lines)
+                    else:
+                        # 不合并：用\N分隔多行
+                        combined_text = r'\N'.join(text_lines)
+                    
+                    # SRT转换为ASS时，保留所有文本，不删除任何标签
+                    ass_line = f"Dialogue: 0,{start_time},{end_time},Default,,0000,0000,0000,,{combined_text}"
+                    ass_lines.append(ass_line)
+                
+                i = j
+            elif line.isdigit():
                 if i + 1 < len(lines):
                     time_line = lines[i + 1].strip()
                     if '-->' in time_line:
                         start_time, end_time = self._parse_srt_time(time_line)
                         text_lines = []
                         j = i + 2
-                        while j < len(lines) and lines[j].strip():
-                            text_lines.append(lines[j].strip())
+                        while j < len(lines):
+                            next_line = lines[j].strip()
+                            if not next_line:
+                                break
+                            # 检查下一行是否是新的时间行
+                            if '-->' in next_line:
+                                break
+                            text_lines.append(next_line)
                             j += 1
                         
                         # 根据merge_multiline参数决定合并方式

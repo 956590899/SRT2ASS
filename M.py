@@ -289,8 +289,23 @@ class StereoTo5_1Converter:
             if not Path(file_path).exists():
                 print(f"❌ 文件不存在: {file_path}")
                 return None, None
-                
-            waveform, sr = torchaudio.load(file_path)
+            
+            # 优先使用scipy加载，避免torchcodec依赖
+            try:
+                import scipy.io.wavfile
+                import numpy as np
+                sr, data = scipy.io.wavfile.read(file_path)
+                waveform = torch.tensor(data, dtype=torch.float32)
+                # 如果是立体声，转换为 [channels, samples]
+                if len(waveform.shape) == 1:
+                    waveform = waveform.unsqueeze(0)
+                else:
+                    waveform = waveform.T
+                # 归一化到 [-1, 1]
+                waveform = waveform / 32768.0
+            except Exception:
+                # 如果scipy失败，使用torchaudio
+                waveform, sr = torchaudio.load(file_path)
             
             # 转换采样率
             if sr != target_sr:
@@ -306,6 +321,29 @@ class StereoTo5_1Converter:
         except Exception as e:
             print(f"❌ 加载失败 {file_path}: {e}")
             return None, None
+    
+    def save_audio_with_scipy(self, file_path, audio, sample_rate, bits_per_sample=16):
+        """使用scipy保存音频文件，避免torchcodec依赖"""
+        import scipy.io.wavfile
+        import numpy as np
+        
+        # 确保音频数据是正确的格式
+        audio_np = audio.detach().cpu().numpy()
+        
+        # 转换形状：[channels, samples] -> [samples, channels]
+        if len(audio_np.shape) == 2:
+            audio_np = audio_np.T
+        
+        # 归一化到指定位深
+        if bits_per_sample == 16:
+            audio_np = np.clip(audio_np * 32768.0, -32768, 32767).astype(np.int16)
+        elif bits_per_sample == 24:
+            audio_np = np.clip(audio_np * 8388608.0, -8388608, 8388607).astype(np.int32)
+        elif bits_per_sample == 32:
+            audio_np = np.clip(audio_np * 2147483648.0, -2147483648, 2147483647).astype(np.int32)
+        
+        # 保存为WAV文件
+        scipy.io.wavfile.write(str(file_path), sample_rate, audio_np)
     
     def create_lfe_channel(self, audio, sr, cutoff_freq=120):
         """创建低音炮声道（LFE）"""
@@ -566,7 +604,7 @@ class StereoTo5_1Converter:
             
             # 先保存为临时WAV文件
             temp_wav = self.temp_dir / "temp_5_1.wav"
-            torchaudio.save(
+            self.save_audio_with_scipy(
                 str(temp_wav),
                 channels_5_1,
                 sample_rate,
@@ -602,7 +640,7 @@ class StereoTo5_1Converter:
                 print("尝试保存为WAV...")
                 # 如果AC3失败，保存为WAV
                 wav_path = output_path.with_suffix('.wav')
-                torchaudio.save(
+                self.save_audio_with_scipy(
                     str(wav_path),
                     channels_5_1,
                     sample_rate,

@@ -74,10 +74,10 @@ MARGIN_L_CHINESE_OFFSET = 5  # 中文左边距偏移量
 MARGIN_R_CHINESE_OFFSET = 5  # 中文右边距偏移量
 
 # 垂直边距配置
-MARGIN_V_K1 = 180          # K1样式垂直边距
-MARGIN_V_K2 = 40           # K2样式垂直边距
-MARGIN_V_K1_CHINESE = 250  # K1中文样式垂直边距
-MARGIN_V_K2_CHINESE = 110  # K2中文样式垂直边距
+MARGIN_V_K1 = 200          # K1样式垂直边距
+MARGIN_V_K2 = 60           # K2样式垂直边距
+MARGIN_V_K1_CHINESE = 280  # K1中文样式垂直边距
+MARGIN_V_K2_CHINESE = 140  # K2中文样式垂直边距
 MARGIN_V_CHINESE = 0       # 独立中文样式垂直边距（备用）
 MARGIN_V_COUNTDOWN = 0     # 倒计时垂直边距
 
@@ -122,7 +122,7 @@ CHINESE_INDEPENDENT_MARGIN_V_BOTTOM = 80  # 独立中文样式底部位置时的
 # ====================== 故障特效配置 ======================
 GLITCH_EFFECT_ENABLE = 1          # 故障特效开关
 GLITCH_TRANSLATION_ENABLE = 1     # 翻译故障特效开关
-GLITCH_GAP_THRESHOLD = 3.0        # 歌词间隔多少秒才增加特效(秒)
+GLITCH_GAP_THRESHOLD = 5.0        # 歌词间隔多少秒才增加特效(秒)
 GLITCH_OVERLAP_TIME = 0.1         # 与正式字幕的重叠时间(秒)
 GLITCH_DURATION = 0.3             # 故障特效总持续时间(秒)
 
@@ -322,6 +322,39 @@ def get_vertical_scale_for_style(style_name):
         # K1, K2, K1_Prep, K2_Prep 都使用卡拉OK的垂直缩放比例
         return KARAOKE_VERTICAL_SCALE
 
+def calculate_font_size(text, base_font_size, max_length=60):
+    """根据文本长度计算适当的字体大小
+    
+    Args:
+        text: 要显示的文本
+        base_font_size: 基础字体大小
+        max_length: 最大文本长度阈值
+    
+    Returns:
+        调整后的字体大小
+    """
+    # 清理文本，移除ASS特效标签
+    clean_text = re.sub(r'\\[^{}]+', '', text)
+    clean_text = re.sub(r'[{}]', '', clean_text)
+    
+    # 计算文本长度
+    text_length = len(clean_text)
+    
+    # 根据文本长度调整字体大小
+    if text_length > 60:
+        if text_length <= 70:
+            # 60-70字符，减少10%
+            adjusted_font_size = int(base_font_size * 0.9)
+        elif text_length <= 80:
+            # 70-80字符，减少20%
+            adjusted_font_size = int(base_font_size * 0.8)
+        else:
+            # 超过80字符，减少30%
+            adjusted_font_size = int(base_font_size * 0.7)
+        return adjusted_font_size
+    
+    return base_font_size
+
 def get_outline_width_for_style(style_name):
     """根据样式名称获取边框宽度"""
     if "Chinese_K" in style_name or "k1_Chinese_K" in style_name or "k2_Chinese_K" in style_name:
@@ -405,7 +438,15 @@ def create_glitch_effect(start_time, end_time, style, text, line_index, next_lin
             glitch_text = ''.join([random.choice(glitch_chars) if random.random() < 0.7 else ' ' for _ in range(len(clean_text_str))])
             effect_tags = f"{{\\fad(0,0)\\t(0,100,\\fscx120\\fscy80\\1c&H00FFFF&)}}"
         
-        glitch_line = f"Dialogue: 10,{seconds_to_time_str(segment_start)},{seconds_to_time_str(segment_end)},{style},,0,0,0,,{effect_tags}{glitch_text}"
+        # 在特效标签中添加原始文本标记，用于还原
+        # 使用特殊格式 <!--ORIGINAL:原始文本--> 作为标记
+        original_text = clean_text_str
+        # 对原始文本进行编码，确保不包含特殊字符
+        encoded_original = original_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        # 在特效标签末尾添加标记
+        effect_tags_with_mark = effect_tags.replace('}}', f'<!--ORIGINAL:{encoded_original}-->}}')
+        
+        glitch_line = f"Dialogue: 10,{seconds_to_time_str(segment_start)},{seconds_to_time_str(segment_end)},{style},,0,0,0,,{effect_tags_with_mark}{glitch_text}"
         glitch_lines.append(glitch_line)
     
     return glitch_lines
@@ -645,7 +686,7 @@ def create_bilingual_ass(input_file, auto_overwrite=False, output_path=None):
     ass_template = f"""[Script Info]
 Title: KTV效果
 ScriptType: v4.00+
-WrapStyle: 0
+WrapStyle: 2
 ScaledBorderAndShadow: yes
 PlayResX: 1920
 PlayResY: 1080
@@ -805,7 +846,13 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
             if COUNTDOWN_FADEIN_ENABLE == 1:
                 print(f"  倒计时淡入效果: 开启 (时长: {COUNTDOWN_FADEIN_DURATION}秒)")
         
-        karaoke_line = f"Dialogue: 1,{start_time},{end_time},{current_style},,0,0,0,,{karaoke_text}"
+        # 计算卡拉OK文本的字体大小
+        karaoke_font_size = calculate_font_size(karaoke_text, FONT_SIZE_KARAOKE, max_length=60)
+        # 如果字体大小需要调整，添加\fs标签
+        if karaoke_font_size != FONT_SIZE_KARAOKE:
+            karaoke_line = f"Dialogue: 1,{start_time},{end_time},{current_style},,0,0,0,,{{\\fs{karaoke_font_size}}}{karaoke_text}"
+        else:
+            karaoke_line = f"Dialogue: 1,{start_time},{end_time},{current_style},,0,0,0,,{karaoke_text}"
         processed_lines.append(karaoke_line)
         
         # 为卡拉OK文本创建故障特效
@@ -842,11 +889,20 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
         prep_end = start_time
         
         if start_seconds - prep_start_seconds > 0.1:
+            # 计算预备字幕的字体大小
+            prep_font_size = calculate_font_size(prep_text, FONT_SIZE_KARAOKE, max_length=60)
+            # 如果字体大小需要调整，添加\fs标签
             if PREP_FADEIN_ENABLE == 1:
                 fade_in_ms = int(PREP_FADEIN_DURATION * 1000)
-                prep_line = f"Dialogue: 0,{prep_start},{prep_end},{prep_style},,0,0,0,,{{\\fad({fade_in_ms},0)}}{prep_text}"
+                if prep_font_size != FONT_SIZE_KARAOKE:
+                    prep_line = f"Dialogue: 0,{prep_start},{prep_end},{prep_style},,0,0,0,,{{\\fad({fade_in_ms},0)\\fs{prep_font_size}}}{prep_text}"
+                else:
+                    prep_line = f"Dialogue: 0,{prep_start},{prep_end},{prep_style},,0,0,0,,{{\fad({fade_in_ms},0)}}{prep_text}"
             else:
-                prep_line = f"Dialogue: 0,{prep_start},{prep_end},{prep_style},,0,0,0,,{prep_text}"
+                if prep_font_size != FONT_SIZE_KARAOKE:
+                    prep_line = f"Dialogue: 0,{prep_start},{prep_end},{prep_style},,0,0,0,,{{\\fs{prep_font_size}}}{prep_text}"
+                else:
+                    prep_line = f"Dialogue: 0,{prep_start},{prep_end},{prep_style},,0,0,0,,{prep_text}"
             
             processed_lines.append(prep_line)
             prep_duration = start_seconds - prep_start_seconds
@@ -875,7 +931,13 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
                         else:
                             chinese_style = 'Chinese'
                 
-                chinese_line = f"Dialogue: 2,{start_time},{end_time},{chinese_style},,0,0,0,,{chinese_text_processed}"
+                # 计算中文文本的字体大小
+                chinese_font_size = calculate_font_size(chinese_text_processed, FONT_SIZE_CHINESE, max_length=60)
+                # 如果字体大小需要调整，添加\fs标签
+                if chinese_font_size != FONT_SIZE_CHINESE:
+                    chinese_line = f"Dialogue: 2,{start_time},{end_time},{chinese_style},,0,0,0,,{{\\fs{chinese_font_size}}}{chinese_text_processed}"
+                else:
+                    chinese_line = f"Dialogue: 2,{start_time},{end_time},{chinese_style},,0,0,0,,{chinese_text_processed}"
                 processed_lines.append(chinese_line)
                 
                 # 为翻译文本创建故障特效（如果启用）
@@ -1094,13 +1156,28 @@ def restore_original_ass(input_file, auto_overwrite=False, output_path=None):
         if line.startswith('Dialogue:'):
             parts = line.split(',', 9)
             if len(parts) >= 10:
+                layer = parts[0].split(':')[1].strip()
                 start_time = parts[1].strip()
                 end_time = parts[2].strip()
                 style = parts[3].strip()
                 text = parts[9].strip()
                 
+                # 处理乱码特效行（图层为10）
+                if layer == '10':
+                    # 尝试从特效标签中提取原始文本标记
+                    original_match = re.search(r'<!--ORIGINAL:(.*?)-->', text)
+                    if original_match:
+                        # 提取并解码原始文本
+                        original_text = original_match.group(1)
+                        # 解码特殊字符
+                        original_text = original_text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+                        if original_text:
+                            # 使用原始文本创建还原行
+                            dialogues.append((start_time, end_time, style, original_text, 'Karaoke'))
+                    continue
+                
                 # 保留指定样式的行，同时也保留Default样式
-                if style in ['K1', 'k1_Chinese_K', 'k1_Chinese', 'K2', 'k2_Chinese_K', 'k2_Chinese', 'Default']:
+                if style in ['K1', 'k1_Chinese_K', 'k1_Chinese', 'K2', 'k2_Chinese_K', 'k2_Chinese', 'Default', 'Karaoke']:
                     if style.lower() == 'default':
                         # 对于Default样式，直接保留原始文本，不做处理
                         processed_text = text
@@ -1110,6 +1187,15 @@ def restore_original_ass(input_file, auto_overwrite=False, output_path=None):
                         processed_text = re.sub(r'\s+', ' ', processed_text).strip()
                         if processed_text:
                             dialogues.append((start_time, end_time, style, processed_text, 'Default'))
+                    elif style.lower() == 'karaoke':
+                        # 对于Karaoke样式，清理特效标签
+                        processed_text = text
+                        # 清理文本，删除特效标签和转义序列
+                        processed_text = re.sub(r'\{[^}]*\}', '', processed_text)
+                        processed_text = re.sub(r'\\\w*', '', processed_text)
+                        processed_text = re.sub(r'\s+', ' ', processed_text).strip()
+                        if processed_text:
+                            dialogues.append((start_time, end_time, style, processed_text, 'Karaoke'))
                     else:
                         # 对于非Default样式，处理K值标签
                         # 检测K值，只保留K值和文本，去掉其他特效标签

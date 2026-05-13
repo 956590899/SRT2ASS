@@ -1,5 +1,7 @@
 import os
 import sys
+import subprocess
+import shutil
 
 # 设置环境变量，确保Python使用UTF-8编码
 os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -11,11 +13,32 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
-import torch
-import torchaudio
+# 自动安装缺失的依赖
+try:
+    import torch
+except ImportError:
+    print("torch 未安装，正在安装...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "torch", "torchaudio", "--no-cache-dir"])
+    import torch
+
+try:
+    import torchaudio
+except ImportError:
+    print("torchaudio 未安装，正在安装...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "torchaudio", "--no-cache-dir"])
+    import torchaudio
+
+try:
+    import scipy
+    import scipy.io.wavfile
+except ImportError:
+    print("scipy 未安装，正在安装...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "scipy", "--no-cache-dir"])
+    import scipy
+    import scipy.io.wavfile
+
 from pathlib import Path
 import argparse
-import subprocess
 import tempfile
 import time
 import json
@@ -35,49 +58,56 @@ DEMUCS_VERBOSE = True
 SINGLE_LINE_PROGRESS = True
 
 class ProgressOutputRedirector:
-    """重定向标准输出，捕获并处理Demucs的进度输出"""
-    def __init__(self, original_stdout):
-        self.original_stdout = original_stdout
-        self.last_progress = ""
-    
+    """终极优化版：支持 Unicode 块、强制单行覆盖、防止多进度条并排"""
+    def __init__(self, original_stream):
+        self.original_stream = original_stream
+        self.last_is_progress = False
+        self.encoding = getattr(original_stream, 'encoding', 'utf-8')
+
+    def isatty(self):
+        """欺骗 tqdm 启用 Unicode 块 (█)"""
+        return True
+
     def write(self, text):
-        if SINGLE_LINE_PROGRESS and DEMUCS_VERBOSE:
-            # 检测是否是进度输出
-            # 匹配格式: "  0%|                                                                                  | 0.0/292.5 [00:00<?, ?seconds/s]"
-            if '|' in text and '%' in text:
-                # 清除之前的进度行
-                if self.last_progress:
-                    # 输出回车符，回到行首
-                    self.original_stdout.write('\r')
-                # 输出新的进度行
-                # 确保进度行长度一致，避免清除不完全
-                progress_line = text.rstrip()
-                # 填充空格到固定长度，确保覆盖之前的内容
-                fixed_length = 100
-                if len(progress_line) < fixed_length:
-                    progress_line = progress_line.ljust(fixed_length)
-                self.original_stdout.write(progress_line)
-                self.original_stdout.flush()
-                self.last_progress = progress_line
-            else:
-                # 非进度输出，直接显示
-                if self.last_progress:
-                    # 清除之前的进度行
-                    self.original_stdout.write('\r')
-                    # 填充空格覆盖进度行
-                    self.original_stdout.write(' ' * len(self.last_progress))
-                    self.original_stdout.write('\r')
-                    self.last_progress = ""
-                self.original_stdout.write(text)
-                self.original_stdout.flush()
-        else:
-            # 不使用单行刷新，直接输出
-            self.original_stdout.write(text)
-            self.original_stdout.flush()
-    
+        if not text:
+            return
+
+        # 核心逻辑：检测是否包含 tqdm 进度条特征
+        if '|' in text and ('%' in text or 'it/s' in text or 'seconds/s' in text):
+            # 1. 处理可能夹杂在一起的多个进度更新
+            # 将回车符替换为换行，方便分割处理
+            segments = text.replace('\r', '\n').split('\n')
+            # 提取所有包含进度特征的行，并取最后一行（最新的状态）
+            progress_lines = [line.strip() for line in segments if '|' in line and '%' in line]
+            
+            if progress_parts := progress_lines:
+                latest_bar = progress_parts[-1]
+                # 使用 \r 回到行首 + 最新进度条内容 + 足够长的空格(ljust) 彻底覆盖旧内容
+                # 120个字符通常足以覆盖任何控制台的进度条宽度
+                self.original_stream.write(f'\r{latest_bar}'.ljust(120))
+                self.original_stream.flush()
+                self.last_is_progress = True
+                return
+        
+        # 处理非进度条的普通文本
+        # 只有在文本包含实质内容（非纯空格/换行）时才输出
+        clean_text = text.strip('\r\n')
+        if clean_text:
+            if self.last_is_progress:
+                # 如果上一行是进度条，输出新文本前强制换行，避免文字卡在进度条后面
+                self.original_stream.write('\n')
+                self.last_is_progress = False
+            
+            self.original_stream.write(text)
+            self.original_stream.flush()
+
     def flush(self):
-        self.original_stdout.flush()
+        self.original_stream.flush()
     
+    def fileno(self):
+        try: return self.original_stream.fileno()
+        except: return 1
+
     def close(self):
         pass
 
@@ -232,6 +262,27 @@ class GPUOptimizedDemucs:
         else:
             self.device = "cpu"
 
+    def _cleanup_separator_cache(self):
+        """清理分离器缓存目录中的临时文件"""
+        if not self.cache_dir or not self.cache_dir.exists():
+            return
+        try:
+            import time
+            current_time = time.time()
+            for item in self.cache_dir.iterdir():
+                try:
+                    if item.is_file():
+                        age = current_time - item.stat().st_mtime
+                        if age > 86400:
+                            item.unlink()
+                    elif item.is_dir():
+                        if item.name.startswith('tmp'):
+                            shutil.rmtree(item)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def progress_callback(self, fraction):
         """自定义进度回调函数，实现单行刷新"""
         if SINGLE_LINE_PROGRESS and DEMUCS_VERBOSE:
@@ -249,12 +300,14 @@ class GPUOptimizedDemucs:
         """设置Demucs环境"""
         try:
             import demucs
+            import soundfile
             return True
         except ImportError:
             print("Demucs 未安装，正在安装...")
             try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "demucs", "--upgrade"])
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "demucs", "soundfile", "--upgrade", "--no-cache-dir"])
                 import demucs
+                import soundfile
                 return True
             except Exception as e:
                 print(f"安装失败: {e}")
@@ -349,56 +402,88 @@ class GPUOptimizedDemucs:
                 else:
                     return False
         return False
-
+    
+    def save_audio_with_scipy(self, file_path, audio, sample_rate):
+        """使用scipy保存音频文件，避免torchcodec依赖"""
+        import scipy.io.wavfile
+        import numpy as np
+        
+        # 确保音频数据是正确的格式
+        audio_np = audio.detach().cpu().numpy()
+        
+        # 转换形状：[channels, samples] -> [samples, channels]
+        if len(audio_np.shape) == 2:
+            audio_np = audio_np.T
+        
+        # 归一化到 [-32768, 32767]
+        audio_np = np.clip(audio_np * 32768.0, -32768, 32767).astype(np.int16)
+        
+        # 保存为WAV文件
+        scipy.io.wavfile.write(str(file_path), sample_rate, audio_np)
+    
     def load_audio_file(self, file_path):
         """加载音频文件"""
         file_path = Path(file_path)
         
-        # 对于MP3文件优先使用FFmpeg转换
-        if file_path.suffix.lower() == '.mp3' and self.ffmpeg_available:
-            temp_path = None
+        print(f"  加载音频文件: {file_path}")
+        print(f"  文件存在: {file_path.exists()}")
+        print(f"  文件大小: {file_path.stat().st_size if file_path.exists() else 'N/A'} bytes")
+        print(f"  FFmpeg可用: {self.ffmpeg_available}")
+        
+        # 优先使用FFmpeg转换所有音频文件为WAV，避免使用torchaudio.load的torchcodec依赖
+        temp_path = None
+        
+        try:
+            print(f"  尝试使用FFmpeg转换音频文件")
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+                temp_path = Path(temp_file.name)
             
-            try:
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-                    temp_path = Path(temp_file.name)
-                
-                if self.convert_with_ffmpeg(file_path, temp_path):
-                    waveform, sample_rate = torchaudio.load(temp_path)
-                    return waveform, sample_rate
-                else:
-                    waveform, sample_rate = torchaudio.load(file_path)
-                    return waveform, sample_rate
-            except Exception:
+            print(f"  临时文件: {temp_path}")
+            if self.convert_with_ffmpeg(file_path, temp_path):
+                print(f"  FFmpeg转换成功")
+                # 使用scipy.io.wavfile替代torchaudio.load，避免torchcodec依赖
                 try:
-                    waveform, sample_rate = torchaudio.load(file_path)
+                    import scipy.io.wavfile
+                    sample_rate, data = scipy.io.wavfile.read(temp_path)
+                    print(f"  音频加载成功: {sample_rate}Hz, {data.shape[0]} samples")
+                    # 转换为torch tensor并调整形状
+                    import torch
+                    waveform = torch.tensor(data, dtype=torch.float32)
+                    # 如果是立体声，确保形状为 [channels, samples]
+                    if len(waveform.shape) == 2:
+                        waveform = waveform.T  # 转换为 [channels, samples]
+                    else:
+                        waveform = waveform.unsqueeze(0)  # 单声道添加通道维度
+                    # 归一化到 [-1, 1]
+                    waveform = waveform / 32768.0
                     return waveform, sample_rate
-                except Exception:
-                    raise Exception(f"无法加载音频文件: {file_path}")
-            finally:
-                if temp_path and temp_path.exists():
-                    self.safe_delete_file(temp_path)
-        else:
-            try:
-                waveform, sample_rate = torchaudio.load(file_path)
-                return waveform, sample_rate
-            except Exception as e:
-                if self.ffmpeg_available:
-                    temp_path = None
-                    
+                except Exception as e:
+                    print(f"  scipy加载失败: {e}")
+                    # 尝试使用torchaudio.load，但捕获torchcodec错误
                     try:
-                        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-                            temp_path = Path(temp_file.name)
-                        
-                        if self.convert_with_ffmpeg(file_path, temp_path):
-                            waveform, sample_rate = torchaudio.load(temp_path)
-                            return waveform, sample_rate
-                        else:
-                            raise Exception(f"FFmpeg转换失败: {file_path}")
-                    finally:
-                        if temp_path and temp_path.exists():
-                            self.safe_delete_file(temp_path)
-                else:
-                    raise Exception(f"无法加载音频文件: {file_path}")
+                        waveform, sample_rate = torchaudio.load(temp_path)
+                        print(f"  音频加载成功: {sample_rate}Hz, {waveform.shape[1]} samples")
+                        return waveform, sample_rate
+                    except Exception as e2:
+                        print(f"  torchaudio加载失败: {e2}")
+                        raise Exception(f"无法加载转换后的音频文件: {temp_path}\n详细错误: {e2}")
+            else:
+                print(f"  FFmpeg转换失败")
+                raise Exception(f"FFmpeg转换失败: {file_path}")
+        except Exception as e:
+            print(f"  转换异常: {e}")
+            # 尝试直接使用torchaudio.load
+            try:
+                print(f"  尝试直接加载音频文件")
+                waveform, sample_rate = torchaudio.load(file_path)
+                print(f"  音频加载成功: {sample_rate}Hz, {waveform.shape[1]} samples")
+                return waveform, sample_rate
+            except Exception as e2:
+                print(f"  直接加载失败: {e2}")
+                raise Exception(f"无法加载音频文件: {file_path}\n详细错误: {e2}")
+        finally:
+            if temp_path and temp_path.exists():
+                self.safe_delete_file(temp_path)
 
     def find_audio_files(self, input_path):
         """查找所有音视频文件"""
@@ -444,7 +529,7 @@ class GPUOptimizedDemucs:
     def separate_audio(self, input_path, model_name=DEFAULT_MODEL, output_mode="vocals", output_dir=None):
         """
         分离音频
-        
+
         Args:
             input_path: 输入文件或目录
             model_name: 模型名称
@@ -458,6 +543,13 @@ class GPUOptimizedDemucs:
         print("\n" + "=" * 70)
         print("音频分离处理开始".center(70))
         print("=" * 70)
+
+        self._cleanup_separator_cache()
+        
+        # 全部分离模式强制使用htdemucs_6s模型
+        if output_mode == "all":
+            model_name = "htdemucs_6s"
+            print(f"  全部分离模式，使用模型: {model_name}")
         
         # 加载模型
         model = self.load_model(model_name)
@@ -501,9 +593,9 @@ class GPUOptimizedDemucs:
                 try:
                     import demucs.api
                     if isinstance(model, demucs.api.Separator):
-                        # 重定向标准输出以处理进度条
-                        original_stdout = sys.stdout
-                        sys.stdout = ProgressOutputRedirector(original_stdout)
+                        # 重定向标准错误（tqdm默认使用stderr）
+                        original_stderr = sys.stderr
+                        sys.stderr = ProgressOutputRedirector(original_stderr)
                         
                         try:
                             # 分离音频
@@ -512,9 +604,10 @@ class GPUOptimizedDemucs:
                             # 获取分离结果
                             sources = {stem: track for stem, track in result.items()}
                         finally:
-                            # 恢复标准输出
-                            sys.stdout = original_stdout
-                            sys.stdout.flush()
+                            # 恢复流
+                            sys.stderr = original_stderr
+                            # 关键：手动补一个换行，确保后续的"分离完成"不会接在进度条后面
+                            print()
                         
                         # 保存文件
                         saved_files = []
@@ -522,7 +615,7 @@ class GPUOptimizedDemucs:
                         if output_mode == "vocals":
                             if "vocals" in sources:
                                 output_path = final_output_dir / f"{audio_file.stem}_人声.wav"
-                                torchaudio.save(str(output_path), sources["vocals"], model.samplerate)
+                                self.save_audio_with_scipy(output_path, sources["vocals"], model.samplerate)
                                 print(f"  ✓ 已保存人声: {output_path.name}")
                                 saved_files.append(output_path)
                                 
@@ -534,14 +627,14 @@ class GPUOptimizedDemucs:
                             
                             if instrumental is not None:
                                 output_path = final_output_dir / f"{audio_file.stem}_伴奏.wav"
-                                torchaudio.save(str(output_path), instrumental, model.samplerate)
+                                self.save_audio_with_scipy(output_path, instrumental, model.samplerate)
                                 print(f"  ✓ 已保存伴奏: {output_path.name}")
                                 saved_files.append(output_path)
                                 
                         elif output_mode == "both":
                             if "vocals" in sources:
                                 output_path = final_output_dir / f"{audio_file.stem}_人声.wav"
-                                torchaudio.save(str(output_path), sources["vocals"], model.samplerate)
+                                self.save_audio_with_scipy(output_path, sources["vocals"], model.samplerate)
                                 print(f"  ✓ 已保存人声: {output_path.name}")
                                 saved_files.append(output_path)
                             
@@ -552,7 +645,7 @@ class GPUOptimizedDemucs:
                             
                             if instrumental is not None:
                                 output_path = final_output_dir / f"{audio_file.stem}_伴奏.wav"
-                                torchaudio.save(str(output_path), instrumental, model.samplerate)
+                                self.save_audio_with_scipy(output_path, instrumental, model.samplerate)
                                 print(f"  ✓ 已保存伴奏: {output_path.name}")
                                 saved_files.append(output_path)
                                 
@@ -561,7 +654,7 @@ class GPUOptimizedDemucs:
                             for stem, track in sources.items():
                                 chinese_name = STEM_NAMES.get(stem, stem)
                                 output_path = final_output_dir / f"{audio_file.stem}_{chinese_name}.wav"
-                                torchaudio.save(str(output_path), track, model.samplerate)
+                                self.save_audio_with_scipy(output_path, track, model.samplerate)
                                 saved_files.append(output_path)
                                 print(f"  ✓ 已保存{chinese_name}")
                         
@@ -587,21 +680,24 @@ class GPUOptimizedDemucs:
                 
                 waveform = waveform.unsqueeze(0).to(self.device)
                 
-                # 重定向标准输出以处理进度条
-                original_stdout = sys.stdout
-                sys.stdout = ProgressOutputRedirector(original_stdout)
+                # 重定向标准错误（tqdm默认使用stderr）
+                original_stderr = sys.stderr
+                sys.stderr = ProgressOutputRedirector(original_stderr)
                 
                 try:
                     from demucs.apply import apply_model
                     with torch.no_grad():
+                        # 核心：确保 progress=True
                         sources = apply_model(model, waveform, progress=DEMUCS_VERBOSE, split=True)
-                except:
+                except Exception as e:
+                    # 如果 apply_model 失败的备选方案
                     with torch.no_grad():
                         sources = model(waveform)
                 finally:
-                    # 恢复标准输出
-                    sys.stdout = original_stdout
-                    sys.stdout.flush()
+                    # 恢复流
+                    sys.stderr = original_stderr
+                    # 关键：手动补一个换行，确保后续的"分离完成"不会接在进度条后面
+                    print()
                 
                 # 完成提示
                 elapsed_time = time.time() - file_start_time
@@ -626,7 +722,7 @@ class GPUOptimizedDemucs:
                         stem_audio = sources[-1]
                         
                     output_path = final_output_dir / f"{audio_file.stem}_人声.wav"
-                    torchaudio.save(str(output_path), stem_audio, model.samplerate, bits_per_sample=16)
+                    self.save_audio_with_scipy(output_path, stem_audio, model.samplerate)
                     print(f"  ✓ 已保存人声: {output_path.name}")
                     saved_files.append(output_path)
                     
@@ -637,7 +733,7 @@ class GPUOptimizedDemucs:
                             instrumental += sources[i]
                     
                     output_path = final_output_dir / f"{audio_file.stem}_伴奏.wav"
-                    torchaudio.save(str(output_path), instrumental, model.samplerate, bits_per_sample=16)
+                    self.save_audio_with_scipy(output_path, instrumental, model.samplerate)
                     print(f"  ✓ 已保存伴奏: {output_path.name}")
                     saved_files.append(output_path)
                     
@@ -649,7 +745,7 @@ class GPUOptimizedDemucs:
                         vocals = sources[-1]
                         
                     output_path = final_output_dir / f"{audio_file.stem}_人声.wav"
-                    torchaudio.save(str(output_path), vocals, model.samplerate, bits_per_sample=16)
+                    self.save_audio_with_scipy(output_path, vocals, model.samplerate)
                     print(f"  ✓ 已保存人声: {output_path.name}")
                     saved_files.append(output_path)
                     
@@ -659,7 +755,7 @@ class GPUOptimizedDemucs:
                             instrumental += sources[i]
                     
                     output_path = final_output_dir / f"{audio_file.stem}_伴奏.wav"
-                    torchaudio.save(str(output_path), instrumental, model.samplerate, bits_per_sample=16)
+                    self.save_audio_with_scipy(output_path, instrumental, model.samplerate)
                     print(f"  ✓ 已保存伴奏: {output_path.name}")
                     saved_files.append(output_path)
                     
@@ -669,7 +765,7 @@ class GPUOptimizedDemucs:
                         stem_audio = sources[i]
                         chinese_name = STEM_NAMES.get(stem, stem)
                         output_path = final_output_dir / f"{audio_file.stem}_{chinese_name}.wav"
-                        torchaudio.save(str(output_path), stem_audio, model.samplerate, bits_per_sample=16)
+                        self.save_audio_with_scipy(output_path, stem_audio, model.samplerate)
                         saved_files.append(output_path)
                         print(f"  ✓ 已保存{chinese_name}")
                 
@@ -695,6 +791,11 @@ class GPUOptimizedDemucs:
 
 def main():
     """命令行主函数"""
+    if sys.platform == "win32":
+        # 强制让 tqdm 认为它是连接到终端的
+        import colorama
+        colorama.init()
+        
     parser = argparse.ArgumentParser(description="Demucs 人声分离工具")
     parser.add_argument("input", help="输入文件或目录路径")
     parser.add_argument("-o", "--output", help="输出目录")
@@ -718,6 +819,11 @@ def main():
 
 
 if __name__ == "__main__":
+    if sys.platform == "win32":
+        # 强制让 tqdm 认为它是连接到终端的
+        import colorama
+        colorama.init()
+        
     if len(sys.argv) > 1:
         main()
     else:

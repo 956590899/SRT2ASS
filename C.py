@@ -5,7 +5,14 @@ from pathlib import Path
 import argparse
 import json
 import re
-import chardet
+
+# 自动安装缺失的依赖
+try:
+    import chardet
+except ImportError:
+    print("chardet 未安装，正在安装...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "chardet", "--no-cache-dir"])
+    import chardet
 
 # ====== 字体配置 ======
 # 这里可以方便地修改字体配置
@@ -28,7 +35,7 @@ class SubtitleConverter:
         self.supported_input_formats = {'.srt', '.vtt', '.lrc', '.ssa', '.ass', '.txt'}
         self.fonts_dir = Path(__file__).parent / "TTF"
     
-    def process_output_filename(self, input_path, karaoke_mode=False, is_batch=False):
+    def process_output_filename(self, input_path, karaoke_mode=False, is_batch=False, real_karaoke_effect=0, output_dir=None):
         """处理输出文件名"""
         input_path = Path(input_path)
         stem = input_path.stem
@@ -37,21 +44,51 @@ class SubtitleConverter:
         if is_batch and '(ASS)' in stem:
             return None
         
-        # 处理文件名
-        if karaoke_mode:
-            # 启用卡拉OK模式
-            if '(SRT)' in stem or '(SSA)' in stem:
-                new_stem = stem.replace('(SRT)', '(ASS)').replace('(SSA)', '(ASS)')
+        # 根据real_karaoke_effect确定目标标记
+        if real_karaoke_effect == 'A':  # 全选模式
+            target_marker = ' (ASS)'
+            if ' (ASS)' in stem:
+                new_stem = stem.replace(' (ASS)', target_marker)
+            elif '(ASS)' in stem:
+                new_stem = stem.replace('(ASS)', target_marker)
             else:
-                new_stem = f"{stem} (ASS)"
-        else:
-            # 不启用卡拉OK模式
-            if '(SRT)' in stem or '(SSA)' in stem:
-                new_stem = stem.replace('(SRT)', '(SSA)').replace('(SSA)', '(SSA)')
+                new_stem = stem + target_marker
+        elif real_karaoke_effect == 1 or real_karaoke_effect == 2 or str(real_karaoke_effect) in ['1', '2']:  # KTV效果或提词器效果
+            target_marker = ' (ASS_1)'
+            if ' (ASS)' in stem:
+                new_stem = stem.replace(' (ASS)', target_marker)
+            elif '(ASS)' in stem:
+                new_stem = stem.replace('(ASS)', target_marker)
             else:
-                new_stem = f"{stem} (SSA)"
+                new_stem = stem + target_marker
+        else:  # 默认效果
+            if karaoke_mode:
+                target_marker = ' (ASS)'
+            else:
+                target_marker = ' (SSA)'
+            
+            if ' (ASS)' in stem and karaoke_mode:
+                new_stem = stem
+            elif '(ASS)' in stem and karaoke_mode:
+                new_stem = stem
+            else:
+                new_stem = stem
+                replace_markers = [' (SSA)', ' (SRT)', '(SSA)', '(SRT)']
+                for replace_marker in replace_markers:
+                    if replace_marker in new_stem:
+                        new_stem = new_stem.replace(replace_marker, target_marker)
+                        break
+                if new_stem == stem and karaoke_mode:
+                    new_stem = f"{stem}{target_marker}"
         
-        return input_path.parent / f"{new_stem}.ass"
+        # 确定输出目录
+        if output_dir:
+            output_dir = Path(output_dir)
+            output_path = output_dir / f"{new_stem}.ass"
+        else:
+            output_path = input_path.parent / f"{new_stem}.ass"
+        
+        return output_path
     
     def detect_encoding(self, file_path):
         """检测文件编码"""

@@ -1,7 +1,37 @@
 import os
 import sys
 import ctypes
+import time
+import re
+import shutil
+import subprocess
+import tempfile
 from ctypes import wintypes
+from datetime import timedelta
+
+# 自动安装缺失的依赖
+try:
+    import pyautogui
+except ImportError:
+    print("pyautogui 未安装，正在安装...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "pyautogui", "--no-cache-dir"])
+    import pyautogui
+
+try:
+    import pydub
+except ImportError:
+    print("pydub 未安装，正在安装...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "pydub", "--no-cache-dir"])
+    import pydub
+
+# === 新增：自动安装 opencv-python 以支持 confidence 参数 ===
+try:
+    import cv2
+except ImportError:
+    print("opencv-python 未安装（图像识别必需），正在安装...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "opencv-python", "--no-cache-dir"])
+    import cv2
+
 import tkinter as tk
 from tkinter import ttk
 
@@ -15,85 +45,46 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
-import time
-import re
-import shutil
-import subprocess
-import tempfile
-import pyautogui
-
-# 设置项目自带的ffmpeg路径
-ffmpeg_path = os.path.join(os.path.dirname(__file__), 'Python', 'ffmpeg', 'ffmpeg.exe')
-if os.path.exists(ffmpeg_path):
-    os.environ['PATH'] = os.path.dirname(ffmpeg_path) + os.pathsep + os.environ['PATH']
-    print(f"OK 设置ffmpeg路径: {ffmpeg_path}")
-else:
-    print(f"警告: ffmpeg文件不存在: {ffmpeg_path}")
-
-# 导入pydub
-from pydub import AudioSegment
-from pydub.generators import Sine
-
-# 重写print函数，确保每次输出后都刷新缓冲区
-original_print = print
-def print(*args, **kwargs):
-    # 只有当kwargs中没有flush参数时，才添加flush=True
-    if 'flush' not in kwargs:
-        kwargs['flush'] = True
-    original_print(*args, **kwargs)
-
-# ====== 新增导入（用于带超时的输入） ======
-if sys.platform == 'win32':
-    import msvcrt
-
 # ====== 用户可调参数配置区 ======
 # 0为关 1为开
-# V1转换选项
-ENABLE_V1_CONVERSION = 1
 
-# 文件保存选项
-SAVE_ORIGINAL_LRC = 0
+ENABLE_V1_CONVERSION = 1                          # 是否启用删除规则
 
-# 目录打开选项
-AUTO_OPEN_OUTPUT_DIR = 0
+SAVE_ORIGINAL_LRC = 0                             # 文件保存选项
 
-# 日志详细程度
-SHOW_DETAILED_LOGS = 1
+AUTO_OPEN_OUTPUT_DIR = 0                          # 目录打开选项
 
-# 字幕对齐功能
-ENABLE_SUBTITLE_ALIGNMENT = 1
+SHOW_DETAILED_LOGS = 1                            # 日志详细程度
 
-# Z打包功能
-ENABLE_Z_PACKAGING = 1
+ENABLE_SUBTITLE_ALIGNMENT = 1                     # 字幕对齐功能
 
-# 字幕打包时间差异阈值（秒）
-PACKAGING_DIFF_THRESHOLD = 4.0
+ENABLE_Z_PACKAGING = 1                            # Z打包功能
 
-# 时间轴差异警告阈值（秒）
-TIME_DIFF_WARNING_THRESHOLD = 2.0
+PACKAGING_DIFF_THRESHOLD = 4.0                    # 字幕打包时间差异阈值（秒）
 
-# 歌词选择最大行数
-MAX_SELECTABLE_ROWS = 4
+TIME_DIFF_WARNING_THRESHOLD = 2.0                 # 时间轴差异警告阈值（秒）
 
-# MusicTag图像识别等待时间配置（单位：秒）
-WAIT_OPEN = 3           # 等待MusicTag启动的时间
-WAIT_FILE_LOAD = 2      # 等待文件加载的时间
-WAIT_UI_LOAD = 2        # 等待UI加载的时间
-WAIT_SEARCH = 8        # 等待搜索结果的时间
-WAIT_CONFIRM = 1        # 等待歌词加载的时间
-WAIT_SAVE = 2           # 等待保存完成的时间
+MAX_SELECTABLE_ROWS = 4                           # 歌词选择最大行数
 
-# 新增：歌词确认等待时间
-LYRIC_CONFIRM_TIMEOUT = 5  # 歌词确认倒计时（秒）
-MANUAL_OPERATION_TIMEOUT = 60  # 手动操作最大等待时间（秒）
-MOUSE_MOVEMENT_THRESHOLD = 10  # 鼠标移动检测阈值（像素）
+LYRIC_FETCH_METHOD = 0                            # 歌词获取方案选择（0:直接获取 1:原方案MusicTag）
 
-# 图像识别置信度（0.0-1.0）
-CONFIDENCE = 0.7
+ENABLE_DUAL_LANGUAGE_LYRIC = 1                     # 是否启用双语字幕（0:关闭 1:启用）
 
-# 自动化提示窗口位置配置（像素）
-NOTIFICATION_WINDOW_X = 100  # 距离左侧像素
-NOTIFICATION_WINDOW_Y = 50  # 距离顶部像素
+WAIT_OPEN = 3                                     # 等待MusicTag启动的时间（秒）
+WAIT_FILE_LOAD = 2                                # 等待文件加载的时间（秒）
+WAIT_UI_LOAD = 2                                  # 等待UI加载的时间（秒）
+WAIT_SEARCH = 8                                   # 等待搜索结果的时间（秒）
+WAIT_CONFIRM = 1                                  # 等待歌词加载的时间（秒）
+WAIT_SAVE = 2                                     # 等待保存完成的时间（秒）
+
+LYRIC_CONFIRM_TIMEOUT = 5                         # 歌词确认倒计时（秒）
+MANUAL_OPERATION_TIMEOUT = 60                     # 手动操作最大等待时间（秒）
+MOUSE_MOVEMENT_THRESHOLD = 10                     # 鼠标移动检测阈值（像素）
+
+CONFIDENCE = 0.7                                  # 图像识别置信度（0.0-1.0）
+
+NOTIFICATION_WINDOW_X = 100                       # 自动化提示窗口距离左侧像素
+NOTIFICATION_WINDOW_Y = 50                        # 自动化提示窗口距离顶部像素
 
 # ====== 基础路径配置 ======
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -112,6 +103,763 @@ SEARCH_BTN = os.path.join(RESOURCE_DIR, "search_btn.png")
 CONFIRM_BTN = os.path.join(RESOURCE_DIR, "confirm_btn.png")
 SAVE_LRC_BTN = os.path.join(RESOURCE_DIR, "save_lrc_btn.png")
 LRC_QQ_ROW = os.path.join(RESOURCE_DIR, "lrc_qq_row.png")
+
+# ====== LRC清理和转换功能======
+def parse_time_to_milliseconds(time_str):
+    """将LRC时间格式[mm:ss.xx]或[mm:ss.xxx]转换为毫秒"""
+    time_str = time_str.strip('[]')
+    
+    if '.' in time_str:
+        minutes_str, rest = time_str.split(':', 1)
+        seconds_str, milliseconds_str = rest.split('.')
+    else:
+        minutes_str, seconds_str = time_str.split(':', 1)
+        milliseconds_str = '000'
+    
+    minutes = int(minutes_str)
+    seconds = int(seconds_str)
+    # 支持2-3位毫秒数
+    milliseconds = int(milliseconds_str.ljust(3, '0')[:3])
+    
+    total_milliseconds = (minutes * 60 + seconds) * 1000 + milliseconds
+    return total_milliseconds
+
+# 全局删除规则（无论时间轴在哪里都删除）
+GLOBAL_DELETE_RULES = [
+    # 规则1: 删除无时间轴段（包含时间轴为[00:00.00]的行）
+    {
+        'name': '无时间轴或00:00.00',
+        'condition': lambda stripped, time_matches, content: (
+            not time_matches or any(time_match == '[00:00.00]' for time_match in time_matches)
+        ),
+        'reason': lambda stripped, content: "无时间轴或时间轴为00:00.00"
+    },
+    
+    # 规则2: 文本内容包含冒号(:)符号 - 全局删除
+    {
+        'name': '包含冒号(全局)',
+        'condition': lambda stripped, time_matches, content: (
+            ':' in content or '：' in content
+        ),
+        'reason': lambda stripped, content: "包含冒号符号(全局)"
+    },
+]
+
+# 前10秒删除规则（只在时间轴在0-30秒内的行中删除）
+# 要检查的时间范围（毫秒）
+TIME_LIMIT_MS = 10000  # 10秒 = 10000毫秒
+
+# 要删除的关键词列表（任意一个出现就会触发）
+DELETE_KEYWORDS = [
+    '/',           # 斜杠
+    '-',         # 横线连接符（有空格）
+    '本翻译作品的著作权',  # 版权声明
+    '翻译',        # 翻译字样
+    '歌词'         # 歌词字样
+]
+
+# 规则名称（显示用）
+RULE_NAME = "前10秒删除规则"
+
+# 删除原因（显示用）
+DELETE_REASON = "前10秒内包含斜杠/横线/版权声明/翻译/歌词字样"
+
+# 合并所有规则（先应用全局规则，再应用前10秒规则）
+FIRST_10S_DELETE_RULES = [
+    {
+        'name': RULE_NAME,
+        'condition': lambda stripped, time_matches, content: (
+            any(keyword in content for keyword in DELETE_KEYWORDS) and
+            # 只检查第一个时间戳（开始时间）
+            time_matches and  # 确保有时间戳
+            parse_time_to_milliseconds(time_matches[0]) <= TIME_LIMIT_MS
+        ),
+        'reason': lambda stripped, content: DELETE_REASON
+    },
+]
+
+DELETE_RULES = GLOBAL_DELETE_RULES + FIRST_10S_DELETE_RULES
+
+def detect_encoding(file_path):
+    """文件编码检测"""
+    try:
+        with open(file_path, 'rb') as f:
+            raw = f.read(4)
+        
+        if raw.startswith(b'\xff\xfe\x00\x00'):
+            return 'utf-32-le'
+        elif raw.startswith(b'\x00\x00\xfe\xff'):
+            return 'utf-32-be'
+        elif raw.startswith(b'\xff\xfe'):
+            return 'utf-16-le'
+        elif raw.startswith(b'\xfe\xff'):
+            return 'utf-16-be'
+        elif raw.startswith(b'\xef\xbb\xbf'):
+            return 'utf-8-sig'
+    except:
+        pass
+    
+    encodings = ['utf-8-sig', 'gbk', 'gb2312', 'gb18030', 'utf-8']
+    
+    for encoding in encodings:
+        try:
+            with open(file_path, 'r', encoding=encoding) as f:
+                f.read(100)
+            return encoding
+        except:
+            continue
+    
+    return 'utf-8'
+
+def should_delete_line(line):
+    """判断一行是否应该删除"""
+    stripped = line.strip()
+    
+    # 空行直接删除
+    if not stripped:
+        return True, "空行"
+    
+    # 检查是否包含时间轴字符（支持2-3位小数）
+    time_pattern = r'\[\d{1,2}:\d{2}\.\d{2,3}\]'
+    time_matches = re.findall(time_pattern, stripped)
+    
+    # 提取时间轴之后的内容
+    content = re.sub(time_pattern, '', stripped).strip()
+    
+    # 应用删除规则
+    for rule in DELETE_RULES:
+        if rule['condition'](stripped, time_matches, content):
+            return True, rule['reason'](stripped, content)
+    
+    # 如果没有匹配任何删除规则，则保留
+    return False, "保留"
+
+def milliseconds_to_srt_time(milliseconds):
+    """将毫秒转换为SRT时间格式: HH:MM:SS,mmm"""
+    td = timedelta(milliseconds=milliseconds)
+    hours, remainder = divmod(td.seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    ms = td.microseconds // 1000
+    
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{ms:03d}"
+
+def convert_lrc_to_srt(lyric_lines):
+    """将LRC歌词行转换为SRT格式，支持双语字幕"""
+    if not lyric_lines:
+        return []
+    
+    # 解析所有歌词行
+    lyric_data = []
+    for line in lyric_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        
+        match = re.match(r'\[(\d{1,2}:\d{2}\.\d{2,3})\](.*)', stripped)
+        if match:
+            time_str = match.group(1)
+            lyric_text = match.group(2).strip()
+            
+            if lyric_text:
+                milliseconds = parse_time_to_milliseconds(time_str)
+                lyric_data.append({
+                    'time': milliseconds,
+                    'text': lyric_text
+                })
+    
+    # 按时间排序
+    lyric_data.sort(key=lambda x: x['time'])
+    
+    # 找出所有唯一的时间点
+    unique_times = []
+    for item in lyric_data:
+        if item['time'] not in unique_times:
+            unique_times.append(item['time'])
+    
+    # 创建SRT条目
+    srt_entries = []
+    entry_number = 1
+    
+    for i, current_time in enumerate(unique_times):
+        # 获取当前时间点的所有歌词
+        current_lyrics = [item for item in lyric_data if item['time'] == current_time]
+        
+        # 计算结束时间
+        if i < len(unique_times) - 1:
+            next_time = unique_times[i + 1]
+            end_time = next_time - 100  # 减0.1秒
+        else:
+            end_time = current_time + 5000  # 最后一句显示5秒
+        
+        # 确保结束时间晚于开始时间
+        if end_time <= current_time:
+            end_time = current_time + 100
+        
+        # 为当前时间点的每句歌词创建SRT条目
+        for lyric_item in current_lyrics:
+            start_srt = milliseconds_to_srt_time(current_time)
+            end_srt = milliseconds_to_srt_time(end_time)
+            
+            entry = f"{entry_number}\n{start_srt} --> {end_srt}\n{lyric_item['text']}\n\n"
+            srt_entries.append(entry)
+            entry_number += 1
+    
+    return srt_entries
+
+def print_detailed_deletion_log(deleted_lines_info):
+    """打印详细的删除日志 - 显示所有删除行（跳过空行）"""
+    if not deleted_lines_info:
+        print("没有删除任何行")
+        return
+    
+    # 过滤掉空行的删除日志
+    filtered_deleted_lines = [(line, reason) for line, reason in deleted_lines_info if reason != "空行"]
+    
+    if not filtered_deleted_lines:
+        print("没有删除任何非空行")
+        return
+    
+    print("\n" + "=" * 100)
+    print("全部删除日志 (显示所有被删除的行):")
+    print("=" * 100)
+    
+    for i, (line, reason) in enumerate(filtered_deleted_lines, 1):
+        line_stripped = line.strip()
+        print(f"{i:3}. 删除原因: {reason}")
+        print(f"    行内容: {line_stripped}")
+        if i < len(filtered_deleted_lines):
+            print("-" * 40)
+    
+    print("=" * 100)
+    print(f"总计: {len(deleted_lines_info)} 行被删除（其中 {len(filtered_deleted_lines)} 行为非空行）")
+
+def process_single_file(input_path):
+    """处理单个LRC文件"""
+    try:
+        print(f"正在处理文件: {os.path.basename(input_path)}")
+        
+        # 检测编码并读取文件
+        encoding = detect_encoding(input_path)
+        
+        with open(input_path, 'r', encoding=encoding, errors='replace') as file:
+            lines = file.readlines()
+        
+        print(f"文件编码: {encoding}")
+        print(f"原始行数: {len(lines)}")
+        print("正在应用删除规则...")
+        
+        # 显示删除规则信息
+        print(f"\n当前删除规则配置:")
+        print(f"  全局删除规则: {len(GLOBAL_DELETE_RULES)} 条")
+        print(f"  前10秒删除规则: {len(FIRST_10S_DELETE_RULES)} 条")
+        print(f"  总计: {len(DELETE_RULES)} 条规则")
+        
+        # 应用删除规则，同时记录删除日志
+        cleaned_lines = []
+        deleted_count = 0
+        delete_reasons = {}
+        deleted_lines_info = []  # 存储被删除的行和原因
+        
+        for line_number, line in enumerate(lines, 1):
+            should_delete, reason = should_delete_line(line)
+            if should_delete:
+                deleted_count += 1
+                delete_reasons[reason] = delete_reasons.get(reason, 0) + 1
+                deleted_lines_info.append((line, reason))
+            else:
+                cleaned_lines.append(line)
+        
+        # 显示删除统计
+        print(f"\n处理完成!")
+        print(f"保留行数: {len(cleaned_lines)}")
+        print(f"删除行数: {deleted_count}")
+        
+        if deleted_count > 0:
+            print("\n删除原因统计:")
+            for reason, count in delete_reasons.items():
+                print(f"  {reason}: {count}行")
+            
+            # 显示全部删除日志
+            print_detailed_deletion_log(deleted_lines_info)
+        else:
+            print("没有删除任何行")
+        
+        # 转换为SRT格式
+        srt_entries = convert_lrc_to_srt(cleaned_lines)
+        
+        if not srt_entries:
+            print("⚠ 警告: 没有有效的歌词行，无法转换")
+            return False
+        
+        # 生成输出文件名
+        base_name = os.path.splitext(input_path)[0]
+        srt_path = f"{base_name}.srt"
+        
+        # 写入SRT文件
+        with open(srt_path, 'w', encoding='utf-8') as file:
+            file.writelines(srt_entries)
+        
+        print(f"\n✓ 转换完成!")
+        print(f"  SRT文件: {srt_path}")
+        print(f"  字幕条数: {len(srt_entries)}")
+        
+        # 显示转换后的前10行预览
+        if srt_entries and len(srt_entries) > 0:
+            print("\nSRT文件预览 (前10条):")
+            for i, entry in enumerate(srt_entries[:10]):
+                entry_lines = entry.split('\n')
+                if len(entry_lines) >= 3:
+                    time_info = entry_lines[1]
+                    text_info = entry_lines[2].strip()
+                    print(f"{i+1:2}. {time_info} - {text_info}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"✗ 处理出错: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+# ====== VTT转SRT功能 ======
+def is_karaoke_vtt(vtt_path):
+    """检测VTT文件是否为卡拉OK风格"""
+    try:
+        with open(vtt_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # 检测是否包含时间标签
+        if re.search(r'<\d{2}:\d{2}:\d{2}\.\d{3}>', content):
+            return True
+        # 检测是否包含颜色标签
+        if re.search(r'<c>.*?</c>', content):
+            return True
+        return False
+    except:
+        return False
+
+def convert_karaoke_vtt_to_srt(vtt_path, output_path=None):
+    """将卡拉OK风格的VTT转换为SRT"""
+    if not output_path:
+        dir_name, base_name = os.path.split(vtt_path)
+        name_without_ext = os.path.splitext(base_name)[0]
+        output_path = os.path.join(dir_name, f'{name_without_ext}.srt')
+    
+    # 读取vtt文件
+    with open(vtt_path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    
+    # 处理内容
+    subtitles = []
+    timestamp_pattern = re.compile(r'^(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})')
+    
+    # 第一遍：提取所有有效的字幕段
+    valid_subtitles = []
+    current_subtitle = {}
+    current_text = []
+    
+    for line in lines:
+        line = line.strip()
+        
+        # 跳过WEBVTT头部和其他元数据
+        if line in ['WEBVTT', 'Kind: captions', 'Language: th']:
+            continue
+        
+        # 匹配时间戳行
+        timestamp_match = timestamp_pattern.match(line)
+        if timestamp_match:
+            # 如果已经有当前字幕，处理它
+            if current_subtitle and current_text:
+                # 计算持续时间
+                start_time = current_subtitle['start']
+                end_time = current_subtitle['end']
+                def time_to_ms(time_str):
+                    h, m, s = time_str.split(':')
+                    s, ms = s.split(',')
+                    return int(h)*3600000 + int(m)*60000 + int(s)*1000 + int(ms)
+                duration = time_to_ms(end_time) - time_to_ms(start_time)
+                
+                # 只处理持续时间超过100毫秒的字幕段
+                if duration > 100:
+                    current_subtitle['text'] = '\n'.join(current_text)
+                    valid_subtitles.append(current_subtitle)
+            
+            # 开始新字幕
+            start_time = timestamp_match.group(1).replace('.', ',')
+            end_time = timestamp_match.group(2).replace('.', ',')
+            current_subtitle = {'start': start_time, 'end': end_time}
+            current_text = []
+        else:
+            # 处理文本行，移除时间标签和颜色标签
+            if line:
+                # 移除时间标签，如 <00:00:16.960><c>แดง</c>
+                cleaned_line = re.sub(r'<\d{2}:\d{2}:\d{2}\.\d{3}>', '', line)
+                # 移除颜色标签，如 <c>...</c>
+                cleaned_line = re.sub(r'<c>(.*?)</c>', r'\1', cleaned_line)
+                # 移除特殊标记
+                cleaned_line = cleaned_line.replace('&gt;&gt;', '').strip()
+                # 移除 [เพลง] 标记
+                cleaned_line = cleaned_line.replace('[เพลง]', '').replace('[เสียงร้องเพลง]', '').strip()
+                # 移除其他方括号标记，如 [음악]、[노래] 等
+                cleaned_line = re.sub(r'\[[^\]]+\]', '', cleaned_line).strip()
+                if cleaned_line:
+                    current_text.append(cleaned_line)
+    
+    # 添加最后一个字幕
+    if current_subtitle and current_text:
+        current_subtitle['text'] = '\n'.join(current_text)
+        start_time = current_subtitle['start']
+        end_time = current_subtitle['end']
+        def time_to_ms(time_str):
+            h, m, s = time_str.split(':')
+            s, ms = s.split(',')
+            return int(h)*3600000 + int(m)*60000 + int(s)*1000 + int(ms)
+        duration = time_to_ms(end_time) - time_to_ms(start_time)
+        if duration > 100:
+            valid_subtitles.append(current_subtitle)
+    
+    # 第二遍：提取真正的新内容，处理YouTube VTT的字幕结构
+    if valid_subtitles:
+        # 处理第一个字幕（完整内容）
+        first_subtitle = valid_subtitles[0].copy()
+        subtitles.append(first_subtitle)
+        
+        # 跟踪前一个字幕的行
+        previous_lines = set(first_subtitle['text'].strip().split('\n'))
+        
+        for i in range(1, len(valid_subtitles)):
+            current_subtitle = valid_subtitles[i]
+            current_lines = current_subtitle['text'].strip().split('\n')
+            
+            # 找出当前字幕中不在前一个字幕中的行
+            new_lines = [line for line in current_lines if line not in previous_lines]
+            
+            # 如果有新内容，只保留新内容
+            if new_lines:
+                new_subtitle = current_subtitle.copy()
+                new_subtitle['text'] = '\n'.join(new_lines)
+                subtitles.append(new_subtitle)
+            
+            # 更新previous_lines
+            previous_lines = set(current_lines)
+    
+    # 写入srt文件
+    with open(output_path, 'w', encoding='utf-8') as f:
+        for i, subtitle in enumerate(subtitles, 1):
+            f.write(f"{i}\n")
+            f.write(f"{subtitle['start']} --> {subtitle['end']}\n")
+            f.write(f"{subtitle['text']}\n\n")
+    
+    return output_path, len(subtitles)
+
+def convert_vtt_to_srt(vtt_path, output_path=None):
+    """转换VTT文件为SRT格式，自动检测是否为卡拉OK风格"""
+    if is_karaoke_vtt(vtt_path):
+        print("检测到卡拉OK风格的VTT字幕，使用专用转换算法")
+        return convert_karaoke_vtt_to_srt(vtt_path, output_path)
+    else:
+        print("检测到普通VTT字幕，使用标准转换算法")
+        # 标准VTT转SRT
+        if not output_path:
+            dir_name, base_name = os.path.split(vtt_path)
+            name_without_ext = os.path.splitext(base_name)[0]
+            output_path = os.path.join(dir_name, f'{name_without_ext}.srt')
+        
+        # 读取vtt文件
+        with open(vtt_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        # 处理内容
+        subtitles = []
+        timestamp_pattern = re.compile(r'^(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})')
+        
+        current_subtitle = {}
+        current_text = []
+        
+        for line in lines:
+            line = line.strip()
+            
+            # 跳过WEBVTT头部和其他元数据
+            if line in ['WEBVTT', 'Kind: captions', 'Language: th']:
+                continue
+            
+            # 匹配时间戳行
+            timestamp_match = timestamp_pattern.match(line)
+            if timestamp_match:
+                # 如果已经有当前字幕，处理它
+                if current_subtitle and current_text:
+                    current_subtitle['text'] = '\n'.join(current_text)
+                    subtitles.append(current_subtitle)
+                
+                # 开始新字幕
+                start_time = timestamp_match.group(1).replace('.', ',')
+                end_time = timestamp_match.group(2).replace('.', ',')
+                current_subtitle = {'start': start_time, 'end': end_time}
+                current_text = []
+            else:
+                # 处理文本行
+                if line:
+                    # 移除特殊标记
+                    cleaned_line = line.replace('&gt;&gt;', '').strip()
+                    # 移除方括号标记，如 [음악]、[노래] 等
+                    cleaned_line = re.sub(r'\[[^\]]+\]', '', cleaned_line).strip()
+                    if cleaned_line:
+                        current_text.append(cleaned_line)
+        
+        # 添加最后一个字幕
+        if current_subtitle and current_text:
+            current_subtitle['text'] = '\n'.join(current_text)
+            subtitles.append(current_subtitle)
+        
+        # 写入srt文件
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for i, subtitle in enumerate(subtitles, 1):
+                f.write(f"{i}\n")
+                f.write(f"{subtitle['start']} --> {subtitle['end']}\n")
+                f.write(f"{subtitle['text']}\n\n")
+        
+        return output_path, len(subtitles)
+
+# 设置项目自带的ffmpeg路径
+ffmpeg_path = os.path.join(os.path.dirname(__file__), 'Python', 'ffmpeg', 'ffmpeg.exe')
+if os.path.exists(ffmpeg_path):
+    os.environ['PATH'] = os.path.dirname(ffmpeg_path) + os.pathsep + os.environ['PATH']
+    print(f"OK 设置ffmpeg路径: {ffmpeg_path}")
+else:
+    print(f"警告: ffmpeg文件不存在: {ffmpeg_path}")
+
+# 导入pydub
+from pydub import AudioSegment
+from pydub.generators import Sine
+
+# 导入requests库（用于直接获取歌词）
+try:
+    import requests
+except ImportError:
+    print("警告: requests库未安装，直接获取歌词功能可能无法使用")
+
+# MusicLyricDownloader 类
+class MusicLyricDownloader:
+    def __init__(self):
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        }
+
+    # --- 网易云部分 ---
+    def search_netease(self, keyword):
+        search_url = "https://music.163.com/api/search/get/web"
+        params = {'s': keyword, 'type': 1, 'limit': 5, 'offset': 0}
+        try:
+            import requests
+            res = requests.get(search_url, params=params, headers=self.headers)
+            songs = res.json().get('result', {}).get('songs', [])
+            return [{'id': s['id'], 'title': s['name'], 'artist': s['artists'][0]['name'], 'source': '网易云'} for s in songs]
+        except Exception as e:
+            print(f"网易云搜索失败: {e}")
+            return []
+
+    def get_netease_lyric(self, song_id):
+        url = f"https://music.163.com/api/song/lyric?id={song_id}&lv=1&kv=1&tv=-1"
+        import requests
+        res = requests.get(url, headers=self.headers)
+        data = res.json()
+        lyric = data.get('lrc', {}).get('lyric', '暂无歌词')
+        tlyric = data.get('tlyric', {}).get('lyric', '')
+        has_translation = bool(tlyric and tlyric.strip())
+        return f"{lyric}\n{'-'*20}\n翻译：\n{tlyric}" if tlyric else lyric, has_translation
+
+    # --- QQ 音乐部分 ---
+    def search_qq(self, keyword):
+        search_url = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp"
+        params = {'w': keyword, 'n': 5, 'format': 'json'}
+        try:
+            import requests
+            res = requests.get(search_url, params=params, headers=self.headers)
+            # 兼容处理可能的 JSONP
+            content = res.text
+            if content.startswith('callback(') or content.startswith('jsonp('):
+                content = content[content.find('(')+1 : content.rfind(')')]
+            import json
+            data = json.loads(content)
+            songs = data.get('data', {}).get('song', {}).get('list', [])
+            return [{'mid': s['songmid'], 'title': s['songname'], 'artist': s['singer'][0]['name'], 'source': 'QQ音乐'} for s in songs]
+        except Exception as e:
+            print(f"QQ音乐搜索失败: {e}")
+            return []
+
+    def get_qq_lyric(self, song_mid):
+        lyric_url = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg"
+        params = {
+            'songmid': song_mid,
+            'format': 'json',
+            'nobase64': 0,
+            'g_tk': '5381'
+        }
+        # QQ 音乐必须校验 Referer
+        qq_headers = self.headers.copy()
+        qq_headers['Referer'] = 'https://y.qq.com/'
+        
+        import requests
+        import base64
+        res = requests.get(lyric_url, params=params, headers=qq_headers)
+        data = res.json()
+        lyric_base64 = data.get('lyric', '')
+        if lyric_base64:
+            return base64.b64decode(lyric_base64).decode('utf-8')
+        return "暂无歌词"
+
+# 直接获取歌词函数
+def get_lyric_directly(artist, title):
+    """
+    直接获取歌词
+    :param artist: 歌手名
+    :param title: 歌曲名
+    :return: 获取到的歌词，如果没有获取到则返回空字符串
+    """
+    print(f"[歌词搜索过程] 开始搜索歌词：{artist} - {title}")
+    print(f"[歌词搜索过程] 双语字幕模式：{'启用' if ENABLE_DUAL_LANGUAGE_LYRIC == 1 else '关闭'}")
+    
+    try:
+        # 使用 MusicLyricDownloader 获取歌词
+        downloader = MusicLyricDownloader()
+        
+        # 构建搜索关键词，避免重复
+        if artist == title:
+            search_keyword = artist
+        else:
+            search_keyword = f"{artist} {title}"
+        print(f"[歌词搜索过程] 搜索关键词: {search_keyword}")
+        
+        # 搜索歌曲
+        results = []
+        results.extend(downloader.search_netease(search_keyword))
+        results.extend(downloader.search_qq(search_keyword))
+        
+        if results:
+            print(f"[歌词搜索过程] 找到 {len(results)} 个搜索结果")
+            
+            # 过滤结果，排除Live、纯音乐等类型
+            filtered_results = []
+            for result in results:
+                title_lower = result['title'].lower()
+                # 排除包含以下关键词的结果
+                if any(keyword in title_lower for keyword in ['live', 'instrumental', '纯音乐', '伴奏', 'off vocal']):
+                    continue
+                filtered_results.append(result)
+            
+            # 如果过滤后没有结果，使用原始结果
+            if not filtered_results:
+                filtered_results = results
+            
+            # 计算每个结果的匹配分数
+            scored_results = []
+            for result in filtered_results:
+                score = 0
+                
+                # 标题匹配
+                result_title = result['title'].lower()
+                target_title = title.lower()
+                if result_title == target_title:
+                    score += 100  # 完全匹配
+                elif target_title in result_title:
+                    score += 50   # 包含
+                
+                # 歌手匹配
+                result_artist = result['artist'].lower()
+                target_artist = artist.lower()
+                if result_artist == target_artist:
+                    score += 100  # 完全匹配
+                elif target_artist in result_artist:
+                    score += 50   # 包含
+                
+                # 平台加分（网易云有翻译潜力）
+                if result['source'] == '网易云':
+                    score += 10
+                
+                scored_results.append((score, result))
+            
+            # 按匹配分数降序排序
+            scored_results.sort(key=lambda x: x[0], reverse=True)
+            
+            # 显示全部结果
+            print("[歌词搜索过程] 找到 {} 个可能的结果，显示全部:".format(len(scored_results)))
+            for i, (score, result) in enumerate(scored_results):
+                print(f"[歌词搜索过程] {i+1}. {result['artist']} - {result['title']} ({result['source']}) (匹配分数: {score})")
+            
+            # 优先选择匹配分数最高的结果
+            for i, (score, result) in enumerate(scored_results):
+                print(f"[歌词搜索过程] 选择: {result['artist']} - {result['title']} ({result['source']}) (匹配分数: {score})")
+                
+                # 获取歌词
+                try:
+                    if result['source'] == '网易云':
+                        lyric, has_translation = downloader.get_netease_lyric(result['id'])
+                        if lyric and lyric != '暂无歌词':
+                            if has_translation:
+                                print("[歌词搜索过程] 成功获取联网歌词（双语）")
+                            else:
+                                print("[歌词搜索过程] 成功获取联网歌词")
+                            return lyric
+                        else:
+                            print("[歌词搜索过程] 未找到歌词，尝试下一个")
+                            continue
+                    else:
+                        lyric = downloader.get_qq_lyric(result['mid'])
+                        if lyric and lyric != '暂无歌词':
+                            print("[歌词搜索过程] 成功获取联网歌词")
+                            return lyric
+                        else:
+                            print("[歌词搜索过程] 未找到歌词，尝试下一个")
+                            continue
+                except Exception as e:
+                    print(f"[歌词搜索过程] 获取失败: {e}，尝试下一个")
+                    continue
+            
+            print("[歌词搜索过程] 所有结果都未找到歌词")
+        else:
+            print("[歌词搜索过程] 联网搜索无结果")
+    except Exception as e:
+        # 发生错误时返回空字符串，不影响主程序运行
+        print(f"[歌词搜索过程] 获取联网歌词时发生错误: {e}")
+    
+    return ""
+
+# ====== 命令行参数处理 ======
+def main():
+    """主函数，处理命令行参数"""
+    import argparse
+    parser = argparse.ArgumentParser(description='歌词适配工具')
+    parser.add_argument('input_file', nargs='?', help='输入文件路径')
+    parser.add_argument('--vtt-to-srt', action='store_true', help='将VTT文件转换为SRT格式')
+    args = parser.parse_args()
+    
+    if args.vtt_to_srt and args.input_file:
+        # 处理VTT转SRT功能
+        if args.input_file.lower().endswith('.vtt'):
+            print(f"开始将VTT文件转换为SRT格式: {args.input_file}")
+            output_path, subtitle_count = convert_vtt_to_srt(args.input_file)
+            print(f"转换完成！已生成 {output_path}")
+            print(f"共转换 {subtitle_count} 条字幕")
+        else:
+            print("错误：输入文件必须是VTT格式")
+    else:
+        # 原有功能
+        print("启动歌词适配功能...")
+        # 这里可以调用原有的歌词适配功能
+
+
+
+# 重写print函数，确保每次输出后都刷新缓冲区
+original_print = print
+def print(*args, **kwargs):
+    # 只有当kwargs中没有flush参数时，才添加flush=True
+    if 'flush' not in kwargs:
+        kwargs['flush'] = True
+    original_print(*args, **kwargs)
+
+# ====== 新增导入（用于带超时的输入） ======
+if sys.platform == 'win32':
+    import msvcrt
 
 # ====== Windows API 常量和函数声明（用于窗口置顶） ======
 # 窗口样式常量
@@ -168,67 +916,45 @@ def IsWindowVisible(hWnd):
 # ====== 窗口置顶函数 ======
 def make_window_topmost(window_title=None, window_class=None):
     """
-    将指定标题或类名的窗口置顶
-    :param window_title: 窗口标题（可选）
-    :param window_class: 窗口类名（可选）
-    :return: 是否成功置顶
+    查找窗口并激活，但不执行置顶操作
     """
     try:
-        print("   INFO 尝试将窗口置顶...")
+        print("   INFO 尝试查找并激活窗口...")
         user32 = ctypes.windll.user32
-        
-        # 简化实现：检查Windows API函数是否可用，如果不可用则跳过
-        # 检查user32模块中是否有FindWindowW和SetWindowPosW函数
-        has_findwindow = hasattr(user32, 'FindWindowW')
-        has_setwindowpos = hasattr(user32, 'SetWindowPosW')
-        
-        if not has_findwindow or not has_setwindowpos:
-            print("   INFO Windows API函数不可用，跳过窗口置顶操作")
-            return True
-        
-        # 1. 优先通过类名查找（更可靠）
+
+        hWnd = None
+        # 1. 通过类名查找
         if window_class:
-            try:
-                hWnd = user32.FindWindowW(window_class, None)
-                if hWnd:
-                    print(f"   OK 通过类名 '{window_class}' 找到窗口句柄: {hWnd}")
-                    # 设置窗口为置顶
-                    result = user32.SetWindowPosW(hWnd, -1, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE)
-                    if result:
-                        print(f"   OK 已将窗口置顶")
-                        return True
-                    else:
-                        print(f"   INFO 置顶窗口失败，错误码: {ctypes.GetLastError()}")
-            except Exception as e:
-                print(f"   INFO 通过类名查找失败: {e}")
+            hWnd = user32.FindWindowW(ctypes.c_wchar_p(window_class), None)
         
-        # 2. 尝试通过常见标题查找
-        print("   INFO 简化模式：尝试通过常见标题查找 MusicTag 窗口")
-        common_titles = ["MusicTag", "音乐标签"]
+        # 2. 如果没找到，通过标题查找
+        if not hWnd:
+            for title in ["MusicTag", "音乐标签"]:
+                hWnd = user32.FindWindowW(None, ctypes.c_wchar_p(title))
+                if hWnd: break
         
-        for title in common_titles:
-            try:
-                hWnd = user32.FindWindowW(None, title)
-                if hWnd:
-                    print(f"   OK 通过标题 '{title}' 找到窗口句柄: {hWnd}")
-                    # 设置窗口为置顶
-                    result = user32.SetWindowPosW(hWnd, -1, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE)
-                    if result:
-                        print(f"   OK 已将窗口置顶")
-                        return True
-                    else:
-                        print(f"   INFO 置顶窗口失败，错误码: {ctypes.GetLastError()}")
-            except Exception as e:
-                print(f"   INFO 通过标题 '{title}' 查找失败: {e}")
-        
-        # 3. 如果都找不到，不报错，只是记录信息
-        print(f"   INFO 未找到 MusicTag 窗口，跳过置顶操作")
-        return True
+        if hWnd:
+            print(f"   OK 找到窗口句柄: {hWnd}")
             
+            # 先尝试显示窗口
+            user32.ShowWindow(hWnd, 9)  # SW_RESTORE = 9
+            
+            # 尝试激活窗口到前台
+            user32.SetForegroundWindow(hWnd)
+            
+            # 尝试将窗口设置为焦点
+            user32.SetFocus(hWnd)
+            
+            # 稍等一下，确保窗口完全显示
+            time.sleep(0.5)
+            
+            return True
+        else:
+            print(f"   INFO 未找到 MusicTag 窗口")
+        return False
     except Exception as e:
-        print(f"   INFO 窗口置顶操作失败: {e}")
-        print(f"   INFO 跳过置顶操作，继续执行")
-        return True
+        print(f"   INFO 窗口操作异常: {e}")
+        return False
 
 # ====== 自动化运行提示窗口函数 ======
 def create_automation_notification():
@@ -1227,15 +1953,10 @@ def process_with_z_packaging(srt_path):
 
 def process_lrc_with_v1(lrc_path, output_dir=None):
     """
-    使用 v1.py 处理 LRC 文件
+    使用集成的 V1 逻辑处理 LRC 文件
     """
     if SHOW_DETAILED_LOGS:
         print(f"\nLOOP 开始处理 LRC 文件: {os.path.basename(lrc_path)}")
-    
-    v1_module = import_v1_module()
-    if not v1_module:
-        print("ERROR 无法加载 v1 处理模块")
-        return False
     
     try:
         if not os.path.exists(lrc_path):
@@ -1262,7 +1983,7 @@ def process_lrc_with_v1(lrc_path, output_dir=None):
         lrc_dir = os.path.dirname(lrc_path)
         os.chdir(lrc_dir)
         
-        success = v1_module.process_single_file(lrc_path)
+        success = process_single_file(lrc_path)
         os.chdir(original_dir)
         
         if success:
@@ -1409,12 +2130,17 @@ def locate_and_click(image_path, element_name, timeout=5, offset_x=0, offset_y=0
         
         while time.time() - start_time < timeout:
             try:
-                location = pyautogui.locateOnScreen(image_path, confidence=CONFIDENCE)
+                # 尝试使用 confidence 参数，如果失败则不使用
+                try:
+                    location = pyautogui.locateOnScreen(image_path, confidence=CONFIDENCE)
+                except TypeError:
+                    # 如果 confidence 参数不可用（OpenCV 未安装），不使用该参数
+                    location = pyautogui.locateOnScreen(image_path)
                 if location:
                     center = pyautogui.center(location)
                     
-                    click_x = center.x + offset_x
-                    click_y = center.y + offset_y
+                    click_x = int(center.x) + offset_x
+                    click_y = int(center.y) + offset_y
                     
                     pyautogui.moveTo(click_x, click_y, duration=0.3)
                     time.sleep(0.1)
@@ -1443,18 +2169,23 @@ def select_file_by_image():
         return False
     
     try:
-        location = pyautogui.locateOnScreen(FILE_LIST_IMG, confidence=0.6, minSearchTime=3)
+        # 尝试使用 confidence 参数，如果失败则不使用
+        try:
+            location = pyautogui.locateOnScreen(FILE_LIST_IMG, confidence=0.6, minSearchTime=3)
+        except TypeError:
+            # 如果 confidence 参数不可用（OpenCV 未安装），不使用该参数
+            location = pyautogui.locateOnScreen(FILE_LIST_IMG, minSearchTime=3)
         
         if location:
             if SHOW_DETAILED_LOGS:
                 print(f"   OK 找到文件列表区域: {location}")
             
-            file_x = location.left + location.width // 2
-            
+            file_x = int(location.left) + int(location.width) // 2
+            base_y = int(location.top)
             y_positions = [
-                location.top + 40,
-                location.top + 50,
-                location.top + 60,
+                base_y + 40,
+                base_y + 50,
+                base_y + 60,
             ]
             
             for i, file_y in enumerate(y_positions, 1):
@@ -1485,7 +2216,18 @@ def click_lyrics_icon():
     """点击歌词图标"""
     if SHOW_DETAILED_LOGS:
         print("\nNOTE 点击歌词图标")
+    
+    # 确保窗口置顶并激活，确保歌词图标可见
+    make_window_topmost(window_class=MUSICTAG_WINDOW_CLASS)
+    
+    # 稍等一下，确保窗口完全显示
+    time.sleep(1)
+    
     if locate_and_click(LYRIC_ICON, "歌词图标"):
+        # 点击后等待歌词界面显示
+        time.sleep(1.5)
+        # 再次确保窗口置顶，避免歌词界面被挡住
+        make_window_topmost(window_class=MUSICTAG_WINDOW_CLASS)
         return True
     return False
 
@@ -1493,6 +2235,13 @@ def click_search_button():
     """点击搜索按钮"""
     if SHOW_DETAILED_LOGS:
         print("\nSEARCH 搜索歌词")
+    
+    # 再次尝试将窗口置顶并激活，确保搜索按钮可见
+    make_window_topmost(window_class=MUSICTAG_WINDOW_CLASS)
+    
+    # 稍等一下，确保窗口完全显示
+    time.sleep(1)
+    
     if locate_and_click(SEARCH_BTN, "搜索按钮"):
         return True
     return False
@@ -1547,7 +2296,12 @@ def select_qq_row_by_image(timeout=3):
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
-                location = pyautogui.locateOnScreen(LRC_QQ_ROW, confidence=CONFIDENCE)
+                # 尝试使用 confidence 参数，如果失败则不使用
+                try:
+                    location = pyautogui.locateOnScreen(LRC_QQ_ROW, confidence=CONFIDENCE)
+                except TypeError:
+                    # 如果 confidence 参数不可用（OpenCV 未安装），不使用该参数
+                    location = pyautogui.locateOnScreen(LRC_QQ_ROW)
                 if location:
                     center = pyautogui.center(location)
                     pyautogui.moveTo(center.x, center.y, duration=0.3)
@@ -2085,6 +2839,31 @@ def clean_temp_files_after_processing():
 
 # ====== 主程序 ======
 if __name__ == "__main__":
+    # 首先检查是否有 --vtt-to-srt 参数
+    if "--vtt-to-srt" in sys.argv:
+        # 执行 VTT 转 SRT 功能
+        import argparse
+        parser = argparse.ArgumentParser(description='歌词适配工具')
+        parser.add_argument('input_file', nargs='?', help='输入文件路径')
+        parser.add_argument('--vtt-to-srt', action='store_true', help='将VTT文件转换为SRT格式')
+        args = parser.parse_args()
+        
+        if args.vtt_to_srt and args.input_file:
+            # 处理VTT转SRT功能
+            if args.input_file.lower().endswith('.vtt'):
+                print(f"开始将VTT文件转换为SRT格式: {args.input_file}")
+                output_path, subtitle_count = convert_vtt_to_srt(args.input_file)
+                print(f"转换完成！已生成 {output_path}")
+                print(f"共转换 {subtitle_count} 条字幕")
+                sys.exit(0)
+            else:
+                print("错误：输入文件必须是VTT格式")
+                sys.exit(1)
+        else:
+            print("错误：缺少输入文件")
+            sys.exit(1)
+    
+    # 否则执行歌词适配功能
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE = 0.1
     
@@ -2151,16 +2930,74 @@ if __name__ == "__main__":
     print(f"Music 处理: {artist} - {title}")
     print(f"DIR 工作目录: {input_dir}")
     
-    # 创建静音MP3用于MusicTag
+    # 确保临时目录存在
     os.makedirs(TEMP_MP3_DIR, exist_ok=True)
-    mp3_path = create_silent_mp3(artist, title)
     
-    # 运行MusicTag获取歌词
+    # 运行获取歌词
     print("\n" + "="*60)
     print("开始获取歌词...")
     print("="*60)
     
-    success = automate_musictag(mp3_path, artist, title, input_dir)
+    if LYRIC_FETCH_METHOD == 0:
+        # 使用直接获取方案
+        print("[方案0] 使用直接获取歌词")
+        
+        # 直接获取歌词
+        lyric_content = get_lyric_directly(artist, title)
+        
+        if lyric_content:
+            # 保存歌词到LRC文件
+            safe_artist = re.sub(r'[<>:"/\\|?*]', '_', artist)
+            safe_title = re.sub(r'[<>:"/\\|?*]', '_', title)
+            temp_lrc_path = os.path.join(TEMP_MP3_DIR, f"{safe_artist} - {safe_title}.lrc")
+            
+            # 写入LRC文件
+            with open(temp_lrc_path, 'w', encoding='utf-8') as f:
+                f.write(lyric_content)
+            
+            print(f"OK 已保存歌词到: {os.path.basename(temp_lrc_path)}")
+            
+            # 修复编码问题
+            print(f"\nTOOL 修复歌词文件编码...")
+            if fix_lyrics_encoding(temp_lrc_path):
+                print("OK 歌词文件编码修复完成")
+            else:
+                print("WARN 歌词文件编码可能有问题")
+            
+            # 验证文件
+            is_valid = verify_lyrics_file(temp_lrc_path, artist, title)
+            
+            if is_valid:
+                if SHOW_DETAILED_LOGS:
+                    print("OK 歌词验证: 通过")
+            else:
+                print("WARN 歌词验证: 可能存在问题")
+            
+            # 处理LRC文件
+            if ENABLE_V1_CONVERSION == 1:
+                success = process_lrc_with_v1(temp_lrc_path, input_dir)
+            else:
+                # 不启用V1转换，直接复制LRC文件到输出目录
+                success = True
+                target_lrc = os.path.join(input_dir, os.path.basename(temp_lrc_path))
+                try:
+                    shutil.copy2(temp_lrc_path, target_lrc)
+                    if SHOW_DETAILED_LOGS:
+                        print(f"FILE 已复制LRC文件到输出目录: {target_lrc}")
+                except Exception as e:
+                    print(f"ERROR 复制LRC文件失败: {e}")
+                    success = False
+        else:
+            print("ERROR 直接获取歌词失败")
+            success = False
+    else:
+        # 使用原方案（MusicTag）
+        print("[方案1] 使用原方案（使用第三方程序MusicTag）")
+        
+        # 创建静音MP3用于MusicTag
+        mp3_path = create_silent_mp3(artist, title)
+        
+        success = automate_musictag(mp3_path, artist, title, input_dir)
     
     print("\n" + "="*60)
     if success:
